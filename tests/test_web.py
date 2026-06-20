@@ -499,6 +499,19 @@ class WebTests(unittest.TestCase):
             self.assertEqual(automation_status.json()["emergency_stop"]["value"], "0")
             self.assertGreaterEqual(len(automation_status.json()["controls"]), 1)
 
+            automation_run_once = client.post(
+                "/api/automation/run-once",
+                json={
+                    "symbol": "BTCUSDT",
+                    "run_mode": "paper",
+                    "order_notional": 100,
+                    "parameters": {"momentum_threshold_bps": 999999, "imbalance_threshold": 1},
+                },
+            )
+            self.assertEqual(automation_run_once.status_code, 200)
+            self.assertEqual(automation_run_once.json()["status"], "no_order")
+            self.assertEqual(automation_run_once.json()["reason"], "signal_hold")
+
             emergency_stop = client.post("/api/automation/emergency-stop")
             self.assertEqual(emergency_stop.status_code, 200)
             stopped_preflight = client.post(
@@ -520,6 +533,13 @@ class WebTests(unittest.TestCase):
             close_all = client.post("/api/automation/close-all", json={"run_mode": "paper", "reason": "test_close_all"})
             self.assertEqual(close_all.status_code, 200)
             self.assertEqual(close_all.json()["closed_count"], 1)
+
+            notification_dispatch = client.post("/api/notifications/dispatch", json={"limit": 50, "dry_run": True})
+            self.assertEqual(notification_dispatch.status_code, 200)
+            self.assertGreaterEqual(notification_dispatch.json()["dispatched_count"], 1)
+            dispatched_notifications = client.get("/api/notifications?all=1")
+            self.assertEqual(dispatched_notifications.status_code, 200)
+            self.assertIn("dry_run", {item["status"] for item in dispatched_notifications.json()})
 
             auto_execute = client.post(
                 "/api/paper-trading/auto-execute",

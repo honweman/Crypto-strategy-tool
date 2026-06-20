@@ -240,6 +240,15 @@ class SecurityStoreTests(unittest.TestCase):
             )
             self.assertEqual(notification["payload"]["order_id"], trade_order["id"])
             self.assertEqual(db.list_notifications(user["id"])[0]["status"], "queued")
+            updated_notification = db.update_notification_status(
+                notification["id"],
+                user_id=user["id"],
+                status="dry_run",
+                payload={**notification["payload"], "dispatch_attempts": [{"dry_run": True}]},
+                delivered_at="2026-01-01T00:00:00+00:00",
+            )
+            self.assertEqual(updated_notification["status"], "dry_run")
+            self.assertEqual(updated_notification["payload"]["dispatch_attempts"][0]["dry_run"], True)
 
             summary = db.monitoring_summary(user["id"])
             self.assertEqual(summary["total_runs"], 1)

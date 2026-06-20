@@ -250,6 +250,19 @@ class AutomationControlRequest(BaseModel):
     run_mode: str = "paper"
 
 
+class AutomationRunOnceRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    strategy_config_id: Optional[int] = None
+    strategy_type: str = "manual_signal"
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    run_mode: str = "paper"
+    order_notional: float = Field(default=100.0, gt=0)
+    quantity: Optional[float] = Field(default=None, gt=0)
+    fee_bps: float = Field(default=5.0, ge=0)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    confirm_order: bool = False
+
+
 class UserTradingSwitchRequest(BaseModel):
     paper_trading_enabled: Optional[bool] = None
     live_trading_enabled: Optional[bool] = None
@@ -266,6 +279,11 @@ class CreateNotificationChannelRequest(BaseModel):
     label: str
     destination: str = ""
     is_active: bool = True
+
+
+class NotificationDispatchRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=100)
+    dry_run: bool = True
 
 
 class IndicatorAnalysisRequest(BaseModel):
@@ -1030,6 +1048,49 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
         )
         return control
 
+    @app.post("/api/automation/run-once")
+    def automation_run_once(
+        payload: AutomationRunOnceRequest,
+        request: Request,
+        user: dict = Depends(require(EXECUTE_PAPER_TRADES)),
+    ) -> dict:
+        try:
+            result = _run_automation_once(db, user, payload)
+            db.create_audit_log(
+                user_id=user["id"],
+                action="automation.run_once",
+                entity_type="signal_log",
+                entity_id=result["signal_log"]["id"] if result.get("signal_log") else None,
+                status=result["status"],
+                detail={
+                    "symbol": payload.symbol.strip().upper(),
+                    "run_mode": payload.run_mode,
+                    "strategy_config_id": payload.strategy_config_id,
+                    "signal": result.get("signal", {}).get("signal"),
+                    "order_id": ((result.get("order_result") or {}).get("order") or {}).get("id"),
+                },
+                **_audit_context(request),
+            )
+            return result
+        except ValueError as exc:
+            db.create_audit_log(
+                user_id=user["id"],
+                action="automation.run_once",
+                entity_type="automation_control",
+                status="rejected",
+                detail={"reason": str(exc), "symbol": payload.symbol.strip().upper(), "run_mode": payload.run_mode},
+                **_audit_context(request),
+            )
+            _emit_notification(
+                db,
+                user["id"],
+                "strategy_exception",
+                "自动策略运行失败",
+                str(exc),
+                {"symbol": payload.symbol, "run_mode": payload.run_mode, "strategy_config_id": payload.strategy_config_id},
+            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     @app.post("/api/automation/emergency-stop")
     def automation_emergency_stop(request: Request, user: dict = Depends(require(MANAGE_SYSTEM))) -> dict:
         flag = db.set_system_flag("emergency_stop", "1", updated_by=user["id"])
@@ -1141,6 +1202,27 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
     ) -> list[dict]:
         include_all = all_users and (has_user_permission(user, MANAGE_USERS) or has_user_permission(user, VIEW_ALL_TRADES))
         return db.list_notifications(user["id"], include_all=include_all, limit=limit)
+
+    @app.post("/api/notifications/dispatch")
+    def dispatch_notifications(
+        payload: NotificationDispatchRequest,
+        request: Request,
+        user: dict = Depends(require_any(EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> dict:
+        result = _dispatch_queued_notifications(db, user, limit=payload.limit, dry_run=payload.dry_run)
+        db.create_audit_log(
+            user_id=user["id"],
+            action="notifications.dispatch",
+            entity_type="notifications",
+            status="ok",
+            detail={
+                "dry_run": payload.dry_run,
+                "dispatched_count": result["dispatched_count"],
+                "remaining_queued": result["remaining_queued"],
+            },
+            **_audit_context(request),
+        )
+        return result
 
     @app.post("/api/trading/preflight")
     def trading_preflight(
@@ -2073,6 +2155,238 @@ def _emit_notification(
             )
         )
     return notifications
+
+
+def _run_automation_once(db: Database, user: dict, payload: AutomationRunOnceRequest) -> dict[str, Any]:
+    run_mode = payload.run_mode.strip().lower()
+    if run_mode == "live":
+        raise ValueError("live_automation_not_configured")
+    if run_mode != "paper":
+        raise ValueError("unsupported_run_mode")
+
+    if db.get_system_flag("emergency_stop", "0")["value"] == "1":
+        raise ValueError("global_emergency_stop_active")
+
+    control = _active_automation_control(db, user["id"], payload.strategy_config_id, run_mode)
+    if not control:
+        raise ValueError("automation_not_running")
+
+    strategy_config = None
+    parameters = dict(payload.parameters)
+    strategy_type = payload.strategy_type
+    if payload.strategy_config_id is not None:
+        strategy_config = db.get_strategy_config(
+            payload.strategy_config_id,
+            user_id=user["id"],
+            is_admin=has_user_permission(user, MANAGE_ALL_STRATEGIES),
+        )
+        if not strategy_config:
+            raise ValueError("strategy_config_not_found")
+        parameters = strategy_config["parameters"]
+        strategy_type = strategy_config["strategy_type"]
+
+    snapshot = db.create_realtime_market_snapshot(**_generate_market_snapshot(payload.symbol))
+    signal = _evaluate_simple_signal(snapshot, parameters)
+    signal_log = db.create_signal_log(
+        user_id=user["id"],
+        strategy_config_id=strategy_config["id"] if strategy_config else None,
+        strategy_type=strategy_type,
+        symbol=snapshot["symbol"],
+        signal=signal["signal"],
+        score=signal["score"],
+        parameters=parameters,
+        market_snapshot=snapshot,
+        reason=signal["reason"],
+    )
+
+    if signal["signal"] == "hold":
+        return {
+            "status": "no_order",
+            "reason": "signal_hold",
+            "control": control,
+            "snapshot": snapshot,
+            "signal": signal,
+            "signal_log": signal_log,
+            "order_result": None,
+        }
+
+    last_price = float(snapshot["last_price"])
+    if signal["signal"] == "buy":
+        quantity = payload.quantity or payload.order_notional / max(last_price, 1e-9)
+        order_payload = ManualPaperOrderRequest(
+            symbol=snapshot["symbol"],
+            action="open_long",
+            quantity=quantity,
+            price=last_price,
+            fee_bps=payload.fee_bps,
+            slippage_bps=payload.slippage_bps,
+            confirm_order=payload.confirm_order,
+            reason="automation_run_once",
+            market_type="spot",
+        )
+    else:
+        position = db.get_paper_position(user["id"], snapshot["symbol"])
+        position_quantity = float(position["quantity"]) if position else 0.0
+        if position_quantity <= 1e-12:
+            return {
+                "status": "no_order",
+                "reason": "no_position_to_close",
+                "control": control,
+                "snapshot": snapshot,
+                "signal": signal,
+                "signal_log": signal_log,
+                "order_result": None,
+            }
+        quantity = min(payload.quantity or position_quantity, position_quantity)
+        order_payload = ManualPaperOrderRequest(
+            symbol=snapshot["symbol"],
+            action="close_long",
+            quantity=quantity,
+            price=last_price,
+            reduce_only=True,
+            fee_bps=payload.fee_bps,
+            slippage_bps=payload.slippage_bps,
+            confirm_order=payload.confirm_order,
+            reason="automation_run_once",
+            market_type="spot",
+        )
+
+    order_result = _execute_manual_paper_order(db, user, order_payload)
+    if order_result.get("order"):
+        _emit_notification(
+            db,
+            user["id"],
+            "trade_filled" if order_result["order"]["status"] == OrderStatus.FILLED.value else "order_state",
+            "自动策略 Paper 订单状态更新",
+            f"{order_result['order']['symbol']} {order_result['order']['side']} {order_result['order']['status']}",
+            {"signal": signal_log, "order": order_result["order"], "trade": order_result.get("trade")},
+        )
+    return {
+        "status": "order_submitted",
+        "reason": signal["signal"],
+        "control": control,
+        "snapshot": snapshot,
+        "signal": signal,
+        "signal_log": signal_log,
+        "order_result": order_result,
+    }
+
+
+def _active_automation_control(
+    db: Database,
+    user_id: int,
+    strategy_config_id: int | None,
+    run_mode: str,
+) -> dict[str, Any] | None:
+    controls = db.list_automation_controls(user_id, include_all=False)
+    exact_match = None
+    global_match = None
+    for control in controls:
+        if control["run_mode"] != run_mode:
+            continue
+        if control["strategy_config_id"] == strategy_config_id:
+            exact_match = control
+        if control["strategy_config_id"] is None:
+            global_match = control
+    control = exact_match or global_match
+    if not control:
+        return None
+    if control["status"] != "running" or not control["trading_enabled"]:
+        return None
+    return control
+
+
+def _dispatch_queued_notifications(db: Database, user: dict, limit: int = 20, dry_run: bool = True) -> dict[str, Any]:
+    queued = [item for item in db.list_notifications(user["id"], include_all=False, limit=500) if item["status"] == "queued"]
+    selected = queued[:limit]
+    results = []
+    for notification in selected:
+        updated_payload = dict(notification["payload"] or {})
+        attempts = list(updated_payload.get("dispatch_attempts") or [])
+        attempt = {
+            "at": utc_now(),
+            "dry_run": bool(dry_run),
+            "channel_type": notification["channel_type"],
+            "destination": notification["destination"],
+        }
+        if dry_run:
+            attempt["status"] = "dry_run"
+            next_status = "dry_run"
+            delivered_at = utc_now()
+        elif os.environ.get("CRYPTO_LAB_ENABLE_OUTBOUND_NOTIFICATIONS", "0") != "1":
+            attempt["status"] = "blocked_outbound_disabled"
+            next_status = "blocked_outbound_disabled"
+            delivered_at = None
+        else:
+            next_status, delivered_at = _deliver_notification(notification, attempt)
+        attempts.append(attempt)
+        updated_payload["dispatch_attempts"] = attempts
+        updated = db.update_notification_status(
+            notification_id=notification["id"],
+            user_id=user["id"],
+            status=next_status,
+            payload=updated_payload,
+            delivered_at=delivered_at,
+        )
+        results.append(updated or notification)
+    remaining_queued = len([item for item in db.list_notifications(user["id"], include_all=False, limit=500) if item["status"] == "queued"])
+    return {
+        "dry_run": dry_run,
+        "requested_count": len(selected),
+        "dispatched_count": len(results),
+        "remaining_queued": remaining_queued,
+        "results": results,
+    }
+
+
+def _deliver_notification(notification: dict[str, Any], attempt: dict[str, Any]) -> tuple[str, str | None]:
+    channel_type = notification["channel_type"]
+    destination = notification["destination"]
+    body = {
+        "event_type": notification["event_type"],
+        "title": notification["title"],
+        "message": notification["message"],
+        "payload": notification["payload"],
+        "created_at": notification["created_at"],
+    }
+    try:
+        if channel_type == "webhook":
+            if not destination.startswith(("https://", "http://")):
+                attempt["status"] = "invalid_webhook_url"
+                return "failed", None
+            response = httpx.post(destination, json=body, timeout=5.0)
+            attempt["status"] = "delivered" if response.status_code < 400 else "failed"
+            attempt["response_status_code"] = response.status_code
+            return ("delivered" if response.status_code < 400 else "failed", utc_now() if response.status_code < 400 else None)
+        if channel_type == "telegram":
+            token = os.environ.get("CRYPTO_LAB_TELEGRAM_BOT_TOKEN", "")
+            chat_id = destination
+            if not token or not chat_id:
+                attempt["status"] = "missing_telegram_config"
+                return "failed", None
+            response = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": f"{notification['title']}\n{notification['message']}"},
+                timeout=5.0,
+            )
+            attempt["status"] = "delivered" if response.status_code < 400 else "failed"
+            attempt["response_status_code"] = response.status_code
+            return ("delivered" if response.status_code < 400 else "failed", utc_now() if response.status_code < 400 else None)
+        if channel_type == "email":
+            email_webhook = os.environ.get("CRYPTO_LAB_EMAIL_WEBHOOK_URL", "")
+            if not email_webhook:
+                attempt["status"] = "missing_email_webhook"
+                return "failed", None
+            response = httpx.post(email_webhook, json={**body, "to": destination}, timeout=5.0)
+            attempt["status"] = "delivered" if response.status_code < 400 else "failed"
+            attempt["response_status_code"] = response.status_code
+            return ("delivered" if response.status_code < 400 else "failed", utc_now() if response.status_code < 400 else None)
+        attempt["status"] = "unsupported_channel"
+        return "failed", None
+    except httpx.HTTPError as exc:
+        attempt["status"] = "failed"
+        attempt["error"] = str(exc)
+        return "failed", None
 
 
 def _close_all_paper_positions(db: Database, user: dict, payload: CloseAllPositionsRequest) -> dict[str, Any]:

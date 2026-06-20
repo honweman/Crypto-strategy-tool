@@ -1711,6 +1711,43 @@ class Database:
             ).fetchall()
             return [_public_notification(row) for row in rows]
 
+    def update_notification_status(
+        self,
+        notification_id: int,
+        user_id: int,
+        status: str,
+        payload: dict[str, Any] | None = None,
+        delivered_at: str | None = None,
+        include_all: bool = False,
+    ) -> dict[str, Any] | None:
+        updates = ["status = ?"]
+        values: list[Any] = [status.strip()]
+        if payload is not None:
+            updates.append("payload = ?")
+            values.append(json.dumps(payload, sort_keys=True))
+        if delivered_at is not None:
+            updates.append("delivered_at = ?")
+            values.append(delivered_at)
+        values.append(notification_id)
+        if not include_all:
+            values.append(user_id)
+
+        where = "id = ?" if include_all else "id = ? AND user_id = ?"
+        with self.connect() as conn:
+            cursor = conn.execute(f"UPDATE notifications SET {', '.join(updates)} WHERE {where}", values)
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute(
+                """
+                SELECT notifications.*, users.email AS owner_email
+                FROM notifications
+                JOIN users ON users.id = notifications.user_id
+                WHERE notifications.id = ?
+                """,
+                (notification_id,),
+            ).fetchone()
+            return _public_notification(row) if row else None
+
     def list_trade_records(
         self,
         user_id: int,

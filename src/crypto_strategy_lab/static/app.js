@@ -826,6 +826,42 @@ async function closeAllPaperPositions() {
   }
 }
 
+async function automationRunOnce() {
+  setResult("automation-result", "正在运行一次自动策略...");
+  const strategyConfigId = document.getElementById("automation-strategy-config").value;
+  const payload = {
+    symbol: document.getElementById("automation-symbol").value || "BTCUSDT",
+    run_mode: document.getElementById("automation-run-mode").value,
+    order_notional: Number(document.getElementById("automation-order-notional").value),
+    confirm_order: document.getElementById("automation-confirm-order").checked,
+  };
+  if (strategyConfigId) payload.strategy_config_id = Number(strategyConfigId);
+  try {
+    const data = await api("/api/automation/run-once", { method: "POST", body: JSON.stringify(payload) });
+    const order = data.order_result?.order;
+    const signalText = data.signal?.signal || "-";
+    setResult(
+      "automation-result",
+      order
+        ? `策略运行完成：信号 ${signalText}，订单 #${order.id} ${order.status}。`
+        : `策略运行完成：信号 ${signalText}，未下单（${data.reason}）。`,
+      order ? "success" : "warning"
+    );
+    await Promise.all([
+      loadAutomationStatus(),
+      loadPaperTrading(),
+      loadMonitoring(),
+      loadOrderHistory(),
+      loadExecutionEvents(),
+      loadRealtime(),
+      loadNotifications(),
+      loadAuditLogs(),
+    ]);
+  } catch (error) {
+    setResult("automation-result", error.message, "danger");
+  }
+}
+
 function renderAutomationStatus() {
   const status = state.automationStatus || { emergency_stop: { value: "0" }, controls: [] };
   const emergencyValue = typeof status.emergency_stop === "string" ? status.emergency_stop : status.emergency_stop?.value;
@@ -896,6 +932,22 @@ async function createNotificationChannel(event) {
   }
 }
 
+async function dispatchNotifications() {
+  try {
+    const data = await api("/api/notifications/dispatch", {
+      method: "POST",
+      body: JSON.stringify({
+        limit: 50,
+        dry_run: document.getElementById("notification-dry-run").checked,
+      }),
+    });
+    await Promise.all([loadNotifications(), loadAuditLogs()]);
+    toast(`通知派发处理 ${formatNumber(data.dispatched_count)} 条，剩余 ${formatNumber(data.remaining_queued)} 条`);
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 function renderNotifications() {
   const channelRows = state.notificationChannels
     .map(
@@ -927,7 +979,7 @@ function renderNotifications() {
           <td>${escapeHtml(item.channel_type)}</td>
           <td>${escapeHtml(item.event_type)}</td>
           <td>${escapeHtml(item.title)}</td>
-          <td><span class="chip ${item.status === "stored" ? "success" : "warning"}">${escapeHtml(item.status)}</span></td>
+          <td><span class="chip ${["stored", "delivered", "dry_run"].includes(item.status) ? "success" : item.status === "failed" ? "danger" : "warning"}">${escapeHtml(item.status)}</span></td>
           <td>${escapeHtml(item.message)}</td>
         </tr>`
     )
@@ -2151,9 +2203,11 @@ document.getElementById("refresh-execution-events").addEventListener("click", ()
 document.getElementById("automation-start").addEventListener("click", () => automationControl("start"));
 document.getElementById("automation-pause").addEventListener("click", () => automationControl("pause"));
 document.getElementById("automation-stop").addEventListener("click", () => automationControl("stop"));
+document.getElementById("automation-run-once").addEventListener("click", () => automationRunOnce());
 document.getElementById("emergency-stop").addEventListener("click", () => triggerEmergencyStop());
 document.getElementById("clear-emergency-stop").addEventListener("click", () => clearEmergencyStop());
 document.getElementById("close-all-paper").addEventListener("click", () => closeAllPaperPositions());
+document.getElementById("dispatch-notifications").addEventListener("click", () => dispatchNotifications());
 document.getElementById("refresh-notifications").addEventListener("click", () => loadNotifications().catch((error) => toast(error.message)));
 document.getElementById("notification-channel-form").addEventListener("submit", createNotificationChannel);
 document.getElementById("data-provider").addEventListener("change", () => updateDataSourceFields({ resetSymbol: true }));

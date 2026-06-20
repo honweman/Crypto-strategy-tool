@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=14" />
+    <link rel="stylesheet" href="/static/app.css?v=15" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -268,12 +268,16 @@
             </div>
             <div class="form-grid compact-form">
               <label>策略配置<select id="automation-strategy-config"></select></label>
+              <label>交易对<input id="automation-symbol" value="BTCUSDT" /></label>
+              <label>单次名义额<input id="automation-order-notional" type="number" value="100" min="1" step="10" /></label>
               <label>运行模式
                 <select id="automation-run-mode">
                   <option value="paper">paper</option>
                   <option value="live">live</option>
                 </select>
               </label>
+              <label class="checkbox-row"><input id="automation-confirm-order" type="checkbox" /> 自动运行带二次确认</label>
+              <button id="automation-run-once" type="button">运行一次策略</button>
               <button id="clear-emergency-stop" class="secondary" type="button">解除紧急停止</button>
               <button id="close-all-paper" class="danger" type="button">平掉所有 Paper 持仓</button>
             </div>
@@ -287,7 +291,10 @@
                 <p class="eyebrow">Notifications</p>
                 <h2>通知系统</h2>
               </div>
-              <button id="refresh-notifications" type="button">刷新通知</button>
+              <div class="button-row">
+                <button id="dispatch-notifications" type="button">派发队列</button>
+                <button id="refresh-notifications" class="secondary" type="button">刷新通知</button>
+              </div>
             </div>
             <form id="notification-channel-form" class="form-grid compact-form">
               <label>渠道
@@ -301,6 +308,7 @@
               <label>标签<input id="notification-label" value="默认通知" /></label>
               <label class="wide-field">目标地址/配置<input id="notification-destination" placeholder="Webhook URL / Telegram Chat ID / Email" /></label>
               <label class="checkbox-row"><input id="notification-active" type="checkbox" checked /> 启用</label>
+              <label class="checkbox-row"><input id="notification-dry-run" type="checkbox" checked /> 派发时只做演练</label>
               <button type="submit">添加通知渠道</button>
             </form>
             <div id="notification-channels-table" class="table-wrap"></div>
@@ -507,6 +515,6 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=14"></script>
+    <script src="/static/app.js?v=15"></script>
   </body>
 </html>
