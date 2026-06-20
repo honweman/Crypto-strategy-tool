@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crypto Strategy Lab</title>
+    <link rel="stylesheet" href="/static/app.css?v=14" />
+  </head>
+  <body>
+    <main id="login-view" class="login-shell" hidden>
+      <form id="login-form" class="login-panel">
+        <div>
+          <p class="eyebrow">Crypto Strategy Lab</p>
+          <h1>登录</h1>
+        </div>
+        <label>
+          邮箱
+          <input id="login-email" name="email" type="email" autocomplete="username" value="admin@example.com" required />
+        </label>
+        <label>
+          密码
+          <input id="login-password" name="password" type="password" autocomplete="current-password" value="change-me-now" required />
+        </label>
+        <button type="submit">登录</button>
+        <p id="login-error" class="error-line"></p>
+      </form>
+    </main>
+
+    <main id="app-view" hidden>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Crypto Strategy Lab</p>
+          <h1>策略工作台</h1>
+        </div>
+        <div class="user-strip">
+          <span id="current-user"></span>
+          <button id="logout-button" type="button">退出</button>
+        </div>
+      </header>
+
+      <nav class="app-nav" aria-label="主导航">
+        <button class="nav-tab" data-page-tab="status" type="button">状态</button>
+        <button class="nav-tab" data-page-tab="trades" type="button">交易记录</button>
+        <button class="nav-tab" data-page-tab="config" type="button">配置</button>
+      </nav>
+
+      <div class="page-shell">
+        <section id="status-page" class="page" data-page="status">
+          <section class="status-band">
+            <div>
+              <span class="label">角色</span>
+              <strong id="current-role"></strong>
+            </div>
+            <div>
+              <span class="label">权限</span>
+              <div id="current-permissions" class="chip-list"></div>
+            </div>
+          </section>
+
+          <section id="monitoring-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Monitoring</p>
+                <h2>状态监控</h2>
+              </div>
+              <button id="refresh-monitoring" type="button">刷新</button>
+            </div>
+            <div id="monitoring-summary" class="metric-grid"></div>
+            <div class="subhead">
+              <h3>运行历史</h3>
+            </div>
+            <div id="trade-runs-table" class="table-wrap"></div>
+          </section>
+
+          <section id="paper-status-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Paper Account</p>
+                <h2>账户与持仓</h2>
+              </div>
+              <button id="refresh-paper" type="button">刷新账户</button>
+            </div>
+            <div id="paper-account-summary" class="metric-grid"></div>
+            <div class="subhead">
+              <h3>Paper 持仓</h3>
+            </div>
+            <div id="paper-positions-table" class="table-wrap"></div>
+          </section>
+
+          <section id="realtime-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Realtime</p>
+                <h2>实时行情与信号</h2>
+              </div>
+              <div class="button-row">
+                <button id="refresh-market-snapshot" type="button">刷新行情</button>
+                <button id="evaluate-signal" type="button">触发信号</button>
+              </div>
+            </div>
+            <div class="form-grid compact-form">
+              <label>交易对<input id="realtime-symbol" value="BTCUSDT" /></label>
+              <label>策略配置<select id="signal-strategy-config"></select></label>
+            </div>
+            <div id="realtime-summary" class="metric-grid"></div>
+            <div class="subhead">
+              <h3>信号触发日志</h3>
+            </div>
+            <div id="signal-logs-table" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="trades-page" class="page" data-page="trades" hidden>
+          <section id="trading-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Paper Trading</p>
+                <h2>自动买卖与开平仓</h2>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>动作
+                <select id="paper-action">
+                  <option value="open_long">开多</option>
+                  <option value="close_long">平多</option>
+                  <option value="buy">买入</option>
+                  <option value="sell">卖出</option>
+                </select>
+              </label>
+              <label>币种<input id="paper-symbol" value="BTCUSDT" /></label>
+              <label>数量<input id="paper-quantity" type="number" value="1" min="0" step="0.00000001" /></label>
+              <label>参考价格<input id="paper-price" type="number" value="100" min="0" step="0.0001" /></label>
+              <label>订单类型
+                <select id="paper-order-type">
+                  <option value="market">市价单</option>
+                  <option value="limit">限价单</option>
+                  <option value="stop_loss">止损单</option>
+                  <option value="take_profit">止盈单</option>
+                  <option value="trailing_stop">追踪止损</option>
+                </select>
+              </label>
+              <label>有效期
+                <select id="paper-time-in-force">
+                  <option value="GTC">GTC</option>
+                  <option value="IOC">IOC</option>
+                  <option value="FOK">FOK</option>
+                </select>
+              </label>
+              <label>限价<input id="paper-limit-price" type="number" min="0" step="0.0001" /></label>
+              <label>触发价<input id="paper-stop-price" type="number" min="0" step="0.0001" /></label>
+              <label>追踪比例<input id="paper-trailing-delta" type="number" min="0" step="0.001" /></label>
+              <label>杠杆<input id="paper-leverage" type="number" value="1" min="1" max="125" step="0.1" /></label>
+              <label>维持保证金率<input id="paper-maintenance-margin-ratio" type="number" value="0.005" min="0" max="1" step="0.001" /></label>
+              <label>资金费 bps/8h<input id="paper-funding-bps" type="number" value="0" step="0.1" /></label>
+              <label class="checkbox-row"><input id="paper-post-only" type="checkbox" /> Post-only</label>
+              <label class="checkbox-row"><input id="paper-reduce-only" type="checkbox" /> Reduce-only</label>
+              <label class="checkbox-row"><input id="paper-confirm-order" type="checkbox" /> 二次确认</label>
+              <label>原因<input id="paper-reason" value="manual" /></label>
+              <button id="preflight-paper-order" class="secondary" type="button">下单前预检</button>
+              <button id="submit-paper-order" type="button">提交 Paper 订单</button>
+              <button id="auto-paper-execute" type="button">按策略自动执行</button>
+            </div>
+            <div id="paper-order-result" class="result-box"></div>
+          </section>
+
+          <section id="order-status-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Orders</p>
+                <h2>订单状态</h2>
+              </div>
+              <button id="refresh-orders" type="button">刷新订单</button>
+            </div>
+            <div id="orders-table" class="table-wrap"></div>
+          </section>
+
+          <section id="trade-records-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Trades</p>
+                <h2>交易记录</h2>
+              </div>
+              <button id="refresh-trades" type="button">刷新记录</button>
+            </div>
+            <div id="trade-records-table" class="table-wrap"></div>
+          </section>
+
+          <section id="execution-events-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Execution Audit</p>
+                <h2>交易执行审计</h2>
+              </div>
+              <button id="refresh-execution-events" type="button">刷新执行审计</button>
+            </div>
+            <div id="execution-events-table" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="config-page" class="page" data-page="config" hidden>
+          <section id="account-section" class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Account</p>
+                <h2>账户安全</h2>
+              </div>
+            </div>
+            <form id="change-password-form" class="form-grid">
+              <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required /></label>
+              <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+              <label>确认新密码<input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+              <button type="submit">修改密码</button>
+            </form>
+            <div id="account-security-result" class="result-box compact-result"></div>
+          </section>
+
+          <section id="risk-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Risk Control</p>
+                <h2>交易风控开关</h2>
+              </div>
+              <button id="save-risk-settings" type="button">保存风控</button>
+            </div>
+            <div class="form-grid">
+              <label class="checkbox-row"><input id="paper-trading-enabled" type="checkbox" /> 允许 Paper 自动/手动交易</label>
+              <label class="checkbox-row"><input id="live-trading-enabled" type="checkbox" /> 允许实盘交易开关</label>
+              <label>单笔最大名义额<input id="risk-max-order-notional" type="number" min="0" step="100" /></label>
+              <label>每日最大亏损<input id="risk-max-daily-loss" type="number" min="0" step="100" /></label>
+              <label>单币最大权重<input id="risk-max-symbol-weight" type="number" min="0" max="1" step="0.01" /></label>
+              <label>总敞口上限<input id="risk-max-gross-exposure" type="number" min="0" max="1" step="0.01" /></label>
+              <label>最大开仓数量<input id="risk-max-open-positions" type="number" min="0" step="1" /></label>
+              <label>最大杠杆<input id="risk-max-leverage" type="number" min="1" max="125" step="0.1" /></label>
+              <label>连续亏损停机<input id="risk-max-consecutive-losses" type="number" min="0" step="1" /></label>
+              <label class="checkbox-row"><input id="require-order-confirmation" type="checkbox" /> 单笔下单二次确认</label>
+              <label class="checkbox-row"><input id="allow-reverse-position" type="checkbox" /> 允许反向开仓</label>
+              <label class="checkbox-row"><input id="allow-duplicate-position" type="checkbox" /> 允许重复开仓</label>
+              <label class="checkbox-row"><input id="auto-disable-on-daily-loss" type="checkbox" /> 亏损触发自动停机</label>
+              <label class="checkbox-row"><input id="require-live-confirmation" type="checkbox" /> 实盘需要人工确认</label>
+            </div>
+            <div id="risk-settings-result" class="result-box compact-result"></div>
+          </section>
+
+          <section id="sync-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Reconciliation</p>
+                <h2>仓位同步与对账</h2>
+              </div>
+              <button id="run-exchange-sync" type="button">运行 Paper 对账</button>
+            </div>
+            <div id="exchange-sync-result" class="result-box compact-result"></div>
+            <div id="exchange-sync-table" class="table-wrap"></div>
+          </section>
+
+          <section id="automation-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Automation</p>
+                <h2>自动交易控制台</h2>
+              </div>
+              <div class="button-row">
+                <button id="automation-start" type="button">启动</button>
+                <button id="automation-pause" class="secondary" type="button">暂停</button>
+                <button id="automation-stop" class="secondary" type="button">停止</button>
+                <button id="emergency-stop" class="danger" type="button">紧急停止</button>
+              </div>
+            </div>
+            <div class="form-grid compact-form">
+              <label>策略配置<select id="automation-strategy-config"></select></label>
+              <label>运行模式
+                <select id="automation-run-mode">
+                  <option value="paper">paper</option>
+                  <option value="live">live</option>
+                </select>
+              </label>
+              <button id="clear-emergency-stop" class="secondary" type="button">解除紧急停止</button>
+              <button id="close-all-paper" class="danger" type="button">平掉所有 Paper 持仓</button>
+            </div>
+            <div id="automation-result" class="result-box compact-result"></div>
+            <div id="automation-status-table" class="table-wrap"></div>
+          </section>
+
+          <section id="notification-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Notifications</p>
+                <h2>通知系统</h2>
+              </div>
+              <button id="refresh-notifications" type="button">刷新通知</button>
+            </div>
+            <form id="notification-channel-form" class="form-grid compact-form">
+              <label>渠道
+                <select id="notification-channel-type">
+                  <option value="local">站内</option>
+                  <option value="webhook">Webhook</option>
+                  <option value="telegram">Telegram</option>
+                  <option value="email">邮件</option>
+                </select>
+              </label>
+              <label>标签<input id="notification-label" value="默认通知" /></label>
+              <label class="wide-field">目标地址/配置<input id="notification-destination" placeholder="Webhook URL / Telegram Chat ID / Email" /></label>
+              <label class="checkbox-row"><input id="notification-active" type="checkbox" checked /> 启用</label>
+              <button type="submit">添加通知渠道</button>
+            </form>
+            <div id="notification-channels-table" class="table-wrap"></div>
+            <div class="subhead">
+              <h3>通知记录</h3>
+            </div>
+            <div id="notifications-table" class="table-wrap"></div>
+          </section>
+
+          <section id="data-source-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Market Data</p>
+                <h2>行情数据源</h2>
+              </div>
+              <button id="fetch-market-data" type="button">拉取并保存 CSV</button>
+            </div>
+            <div id="data-source-cards" class="strategy-card-grid"></div>
+            <div class="form-grid">
+              <label>数据源<select id="data-provider"></select></label>
+              <label>币种/交易对<input id="data-symbol" value="BTCUSDT" /></label>
+              <label>周期<select id="data-interval"></select></label>
+              <label>数量<input id="data-limit" type="number" min="1" max="1500" value="200" /></label>
+              <label>开始时间<input id="data-start" placeholder="2026-01-01T00:00:00+00:00" /></label>
+              <label>结束时间<input id="data-end" placeholder="可选" /></label>
+              <label>输出 CSV<input id="data-output-file" value="data/binance_spot_BTCUSDT_1h.csv" /></label>
+            </div>
+            <div id="data-source-result" class="result-box compact-result"></div>
+          </section>
+
+          <section id="watchlist-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Universe</p>
+                <h2>交易对池</h2>
+              </div>
+              <button id="save-watchlist" type="button">保存交易对池</button>
+            </div>
+            <div class="form-grid">
+              <label>名称<input id="watchlist-name" value="主流币观察池" /></label>
+              <label class="wide-field">交易对
+                <textarea id="watchlist-symbols" rows="3">BTCUSDT, ETHUSDT, SOLUSDT</textarea>
+              </label>
+              <label class="wide-field">备注<input id="watchlist-notes" value="用于行情拉取、指标分析和回测候选池" /></label>
+              <label class="checkbox-row"><input id="watchlist-is-default" type="checkbox" /> 设为默认</label>
+            </div>
+            <div id="watchlist-result" class="result-box compact-result"></div>
+            <div id="watchlist-cards" class="strategy-card-grid"></div>
+          </section>
+
+          <section id="indicator-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Indicator Lab</p>
+                <h2>指标分析</h2>
+              </div>
+              <button id="run-indicator-analysis" type="button">计算指标</button>
+            </div>
+            <div id="indicator-catalog" class="chip-list"></div>
+            <div class="form-grid">
+              <label>行情 CSV<input id="indicator-bars-file" value="data/sample_bars.csv" /></label>
+              <label>交易对<input id="indicator-symbol" placeholder="留空则分析 CSV 全部交易对" /></label>
+              <label>快线窗口<input id="indicator-fast-window" type="number" value="12" min="1" step="1" /></label>
+              <label>慢线窗口<input id="indicator-slow-window" type="number" value="26" min="2" step="1" /></label>
+              <label>RSI 窗口<input id="indicator-rsi-window" type="number" value="14" min="2" step="1" /></label>
+              <label>布林窗口<input id="indicator-bollinger-window" type="number" value="20" min="2" step="1" /></label>
+              <label>ATR 窗口<input id="indicator-atr-window" type="number" value="14" min="2" step="1" /></label>
+              <label>MACD 信号窗口<input id="indicator-macd-signal-window" type="number" value="9" min="1" step="1" /></label>
+            </div>
+            <div id="indicator-result" class="result-box compact-result"></div>
+          </section>
+
+          <section id="strategy-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Strategy</p>
+                <h2>策略配置</h2>
+              </div>
+              <button id="save-strategy-config" type="button">保存配置</button>
+            </div>
+            <div id="strategy-catalog-cards" class="strategy-card-grid"></div>
+            <div class="form-grid">
+              <label>配置名称<input id="strategy-config-name" value="我的事件均值回归" /></label>
+              <label>策略模板<select id="strategy-type"></select></label>
+              <label>市场类型
+                <select id="market-type">
+                  <option value="spot">spot</option>
+                  <option value="perpetual-long-only">perpetual-long-only</option>
+                </select>
+              </label>
+              <label class="checkbox-row"><input id="strategy-is-default" type="checkbox" /> 设为默认</label>
+            </div>
+            <div id="strategy-description" class="result-box"></div>
+            <div id="strategy-param-grid" class="form-grid"></div>
+            <div id="strategy-configs-table" class="table-wrap"></div>
+          </section>
+
+          <section id="backtest-section" class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Backtest</p>
+                <h2>事件驱动回测</h2>
+              </div>
+              <button id="run-backtest" type="button">运行回测</button>
+            </div>
+            <div class="form-grid">
+              <label>策略配置<select id="backtest-strategy-config"></select></label>
+              <label>行情 CSV<input id="bars-file" value="data/sample_bars.csv" /></label>
+              <label>事件 CSV<input id="events-file" value="data/sample_events.csv" /></label>
+              <label>初始资金<input id="cash" type="number" value="10000" min="100" step="100" /></label>
+            </div>
+            <div class="subhead">
+              <h3>真实执行假设</h3>
+            </div>
+            <div class="form-grid">
+              <label>手续费 bps<input id="fee-bps" type="number" value="5" min="0" step="0.1" /></label>
+              <label>滑点 bps<input id="slippage-bps" type="number" value="2" min="0" step="0.1" /></label>
+              <label>成交延迟 bar<input id="execution-delay-bars" type="number" value="0" min="0" step="1" /></label>
+              <label>资金费 bps/bar<input id="funding-bps-per-bar" type="number" value="0" step="0.1" /></label>
+              <label>止损比例<input id="stop-loss-pct" type="number" value="0" min="0" max="1" step="0.001" /></label>
+              <label>止盈比例<input id="take-profit-pct" type="number" value="0" min="0" step="0.001" /></label>
+              <label>最大持仓 bar<input id="max-holding-bars" type="number" value="0" min="0" step="1" /></label>
+              <label>杠杆<input id="leverage" type="number" value="1" min="1" max="125" step="0.1" /></label>
+              <label>维持保证金率<input id="maintenance-margin-ratio" type="number" value="0.005" min="0" max="1" step="0.001" /></label>
+              <label>样本外比例<input id="out-of-sample-ratio" type="number" value="0.3" min="0" max="0.9" step="0.05" /></label>
+              <label>单笔最大名义额<input id="backtest-max-order-notional" type="number" value="2500" min="0" step="100" /></label>
+              <label>单币最大权重<input id="backtest-max-symbol-weight" type="number" value="0.35" min="0" max="1" step="0.01" /></label>
+              <label>总敞口上限<input id="backtest-max-gross-exposure" type="number" value="0.8" min="0" max="1" step="0.01" /></label>
+            </div>
+            <div id="backtest-result" class="result-box"></div>
+            <div class="subhead">
+              <h3>参数网格优化</h3>
+            </div>
+            <div class="form-grid">
+              <label class="wide-field">参数网格 JSON
+                <textarea id="grid-search-json" rows="4">{"entry_z":[-1.0,-1.2,-1.5],"exit_z":[0.1,0.2],"base_weight":[0.15,0.2]}</textarea>
+              </label>
+              <label>最大组合数<input id="grid-max-combinations" type="number" value="50" min="1" max="200" step="1" /></label>
+              <button id="run-grid-search" type="button">运行参数优化</button>
+            </div>
+            <div id="grid-search-result" class="result-box compact-result"></div>
+            <div class="subhead">
+              <h3>已保存回测结果</h3>
+            </div>
+            <div id="backtest-history-table" class="table-wrap"></div>
+            <div id="backtest-report-detail" class="result-box" hidden></div>
+          </section>
+
+          <section id="api-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">API Settings</p>
+                <h2>交易所 API</h2>
+              </div>
+            </div>
+            <form id="api-key-form" class="form-grid">
+              <label>交易所<input id="exchange" placeholder="binance" required /></label>
+              <label>标签<input id="key-label" placeholder="main-readonly" required /></label>
+              <label>API Key<input id="api-key" autocomplete="off" required /></label>
+              <label>API Secret<input id="api-secret" type="password" autocomplete="off" required /></label>
+              <label>Passphrase<input id="passphrase" type="password" autocomplete="off" /></label>
+              <label>Scopes<input id="scopes" placeholder="read,trade" /></label>
+              <label class="checkbox-row"><input id="can-trade" type="checkbox" /> 允许交易权限</label>
+              <button type="submit">保存 API</button>
+            </form>
+            <div id="api-keys-table" class="table-wrap"></div>
+          </section>
+
+          <section id="users-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h2>用户与权限</h2>
+              </div>
+            </div>
+            <form id="create-user-form" class="form-grid">
+              <label>邮箱<input id="new-user-email" type="email" required /></label>
+              <label>密码<input id="new-user-password" type="password" required /></label>
+              <label>角色
+                <select id="new-user-role">
+                  <option value="viewer">viewer</option>
+                  <option value="analyst">analyst</option>
+                  <option value="trader">trader</option>
+                  <option value="admin">admin</option>
+                </select>
+              </label>
+              <button type="submit">创建用户</button>
+            </form>
+            <div id="users-table" class="user-card-grid"></div>
+          </section>
+
+          <section id="audit-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Audit</p>
+                <h2>审计日志</h2>
+              </div>
+              <button id="refresh-audit-logs" type="button">刷新审计</button>
+            </div>
+            <div id="audit-logs-table" class="table-wrap"></div>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/static/app.js?v=14"></script>
+  </body>
+</html>

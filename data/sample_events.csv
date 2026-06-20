@@ -1,0 +1,4 @@
+timestamp,symbol,event_type,score,description
+2026-01-12T12:00:00+00:00,BTCUSDT,liquidation_cluster,0.72,large forced selling may mean-revert
+2026-01-23T08:00:00+00:00,BTCUSDT,exchange_risk,-0.85,negative operational headline
+
