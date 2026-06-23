@@ -7,6 +7,7 @@ const state = {
   tradeOrders: [],
   riskSettings: null,
   symbolRules: [],
+  symbolRuleSources: [],
   dataSources: [],
   watchlists: [],
   indicatorCatalog: [],
@@ -286,6 +287,7 @@ async function loadSession() {
       loadStrategyConfigs(),
       loadBacktestHistory(),
       loadRiskSettings(),
+      loadSymbolRuleSources(),
       loadSymbolRules(),
       loadApiKeys(),
       loadUsers(),
@@ -360,6 +362,7 @@ function renderShell() {
   document.getElementById("users-section").hidden = !hasPermission(PERMISSIONS.MANAGE_USERS);
   document.getElementById("audit-section").hidden = !(hasPermission(PERMISSIONS.MANAGE_USERS) || hasPermission(PERMISSIONS.MANAGE_SYSTEM));
   document.getElementById("run-backtest").disabled = !hasPermission(PERMISSIONS.RUN_BACKTESTS);
+  document.getElementById("run-walk-forward").disabled = !hasPermission(PERMISSIONS.RUN_BACKTESTS);
   setActivePage(window.location.hash.replace("#", "") || state.activePage);
 }
 
@@ -387,6 +390,7 @@ async function login(event) {
       loadStrategyConfigs(),
       loadBacktestHistory(),
       loadRiskSettings(),
+      loadSymbolRuleSources(),
       loadSymbolRules(),
       loadApiKeys(),
       loadUsers(),
@@ -447,6 +451,21 @@ async function changePassword(event) {
 async function runBacktest() {
   const box = document.getElementById("backtest-result");
   box.textContent = "运行中...";
+  const payload = buildBacktestPayload();
+
+  try {
+    const data = await api("/api/backtests/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    renderBacktestResult(data);
+    await Promise.all([loadMonitoring(), loadBacktestHistory()]);
+  } catch (error) {
+    box.textContent = error.message;
+  }
+}
+
+function buildBacktestPayload() {
   const strategyConfigId = document.getElementById("backtest-strategy-config").value;
   const payload = {
     bars_file: document.getElementById("bars-file").value,
@@ -460,17 +479,7 @@ async function runBacktest() {
     payload.market_type = document.getElementById("market-type").value || "spot";
     payload.strategy_parameters = collectStrategyParameters();
   }
-
-  try {
-    const data = await api("/api/backtests/run", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    renderBacktestResult(data);
-    await Promise.all([loadMonitoring(), loadBacktestHistory()]);
-  } catch (error) {
-    box.textContent = error.message;
-  }
+  return payload;
 }
 
 function collectBacktestSettings() {
@@ -544,6 +553,67 @@ function renderValidationBlock(validation) {
       <div class="metric"><span class="label">样本外回撤</span><strong>${formatPercent(validation.out_of_sample.max_drawdown || 0)}</strong></div>
       <div class="metric"><span class="label">样本外成交</span><strong>${formatNumber(validation.out_of_sample.trade_count || 0)}</strong></div>
     </div>`;
+}
+
+async function runWalkForward() {
+  const box = document.getElementById("walk-forward-result");
+  box.textContent = "Walk-forward 运行中...";
+  const payload = {
+    ...buildBacktestPayload(),
+    train_events: inputNumber("walk-forward-train-events", 120),
+    test_events: inputNumber("walk-forward-test-events", 40),
+    step_events: inputNumber("walk-forward-step-events", 40),
+    max_windows: inputNumber("walk-forward-max-windows", 12),
+  };
+  try {
+    const data = await api("/api/backtests/walk-forward", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    renderWalkForwardResult(data);
+    await Promise.all([loadMonitoring(), loadBacktestHistory()]);
+  } catch (error) {
+    box.textContent = error.message;
+    box.classList.add("danger");
+  }
+}
+
+function renderWalkForwardResult(data) {
+  const wf = data.walk_forward || data.metrics?.walk_forward || {};
+  if (wf.status !== "completed") {
+    document.getElementById("walk-forward-result").innerHTML = `<div class="result-meta">Walk-forward：${escapeHtml(wf.reason || wf.status || "skipped")}</div>`;
+    return;
+  }
+  const rows = (wf.windows || [])
+    .map(
+      (windowItem) => `
+        <tr>
+          <td>${windowItem.index}</td>
+          <td>${windowItem.train_start}-${windowItem.train_end}</td>
+          <td>${windowItem.test_start}-${windowItem.test_end}</td>
+          <td>${formatPercent(windowItem.train.total_return || 0)}</td>
+          <td>${formatPercent(windowItem.test.total_return || 0)}</td>
+          <td>${formatPercent(windowItem.test.max_drawdown || 0)}</td>
+          <td>${Number(windowItem.test.sharpe || 0).toFixed(2)}</td>
+          <td>${formatNumber(windowItem.test.trade_count || 0)}</td>
+        </tr>`
+    )
+    .join("");
+  document.getElementById("walk-forward-result").classList.remove("danger");
+  document.getElementById("walk-forward-result").innerHTML = `
+    <div class="metric-grid">
+      <div class="metric"><span class="label">窗口数</span><strong>${formatNumber(wf.window_count || 0)}</strong></div>
+      <div class="metric"><span class="label">平均测试收益</span><strong>${formatPercent(wf.average_test_return || 0)}</strong></div>
+      <div class="metric"><span class="label">最差测试回撤</span><strong>${formatPercent(wf.worst_test_drawdown || 0)}</strong></div>
+      <div class="metric"><span class="label">正收益窗口</span><strong>${formatPercent(wf.consistency_ratio || 0)}</strong></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>窗口</th><th>训练</th><th>测试</th><th>训练收益</th><th>测试收益</th><th>测试回撤</th><th>Sharpe</th><th>成交</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="8">暂无窗口</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 async function runGridSearch() {
@@ -1071,10 +1141,47 @@ function canUseSymbolRules() {
   );
 }
 
+async function loadSymbolRuleSources() {
+  if (!canUseSymbolRules()) return;
+  state.symbolRuleSources = await api("/api/symbol-rules/sources");
+  renderSymbolRuleSources();
+}
+
 async function loadSymbolRules() {
   if (!canUseSymbolRules()) return;
   state.symbolRules = await api("/api/symbol-rules?limit=200");
   renderSymbolRules();
+}
+
+function renderSymbolRuleSources() {
+  const select = document.getElementById("symbol-rule-source-provider");
+  if (!select) return;
+  select.innerHTML = state.symbolRuleSources
+    .map((source) => `<option value="${escapeHtml(source.id)}">${escapeHtml(source.name)}</option>`)
+    .join("");
+  const selected = state.symbolRuleSources.find((source) => source.id === select.value) || state.symbolRuleSources[0];
+  if (selected && !document.getElementById("symbol-rule-sync-symbol").value) {
+    document.getElementById("symbol-rule-sync-symbol").placeholder = selected.symbol_hint;
+  }
+}
+
+async function syncSymbolRules() {
+  if (!canUseSymbolRules()) return;
+  setResult("symbol-rule-result", "正在同步交易所公开规则...");
+  try {
+    const data = await api("/api/symbol-rules/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: document.getElementById("symbol-rule-source-provider").value,
+        symbol: document.getElementById("symbol-rule-sync-symbol").value || null,
+        limit: inputNumber("symbol-rule-sync-limit", 200),
+      }),
+    });
+    setResult("symbol-rule-result", `已同步 ${formatNumber(data.saved_count)} 条交易对规则。`, "success");
+    await Promise.all([loadSymbolRules(), loadAuditLogs()]);
+  } catch (error) {
+    setResult("symbol-rule-result", error.message, "danger");
+  }
 }
 
 async function saveSymbolRule() {
@@ -1839,11 +1946,13 @@ function renderStrategyConfigs() {
           <td>${config.id}</td>
           <td>${escapeHtml(config.owner_email)}</td>
           <td>${escapeHtml(config.name)}${config.is_default ? " *" : ""}</td>
+          <td>v${formatNumber(config.current_version || 1)}</td>
           <td>${escapeHtml(definition?.name || config.strategy_type)}</td>
           <td>${escapeHtml(config.market_type)}</td>
           <td>${escapeHtml(paramText)}</td>
           <td>
             <button class="secondary" data-load-strategy="${config.id}" type="button">载入</button>
+            <button class="secondary" data-view-strategy-versions="${config.id}" type="button">版本</button>
             <button class="secondary" data-default-strategy="${config.id}" type="button">默认</button>
             <button class="danger" data-delete-strategy="${config.id}" type="button">删除</button>
           </td>
@@ -1853,8 +1962,31 @@ function renderStrategyConfigs() {
 
   document.getElementById("strategy-configs-table").innerHTML = `
     <table>
-      <thead><tr><th>ID</th><th>用户</th><th>名称</th><th>模板</th><th>市场</th><th>参数</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="7">暂无策略配置</td></tr>'}</tbody>
+      <thead><tr><th>ID</th><th>用户</th><th>名称</th><th>版本</th><th>模板</th><th>市场</th><th>参数</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="8">暂无策略配置</td></tr>'}</tbody>
+    </table>
+  `;
+}
+
+async function viewStrategyVersions(id) {
+  const versions = await api(`/api/strategy-configs/${id}/versions`);
+  const rows = versions
+    .map(
+      (version) => `
+        <tr>
+          <td>v${formatNumber(version.version)}</td>
+          <td>${formatDate(version.created_at)}</td>
+          <td>${escapeHtml(version.name)}</td>
+          <td>${escapeHtml(version.strategy_type)}</td>
+          <td>${escapeHtml(version.market_type)}</td>
+          <td><code>${escapeHtml(JSON.stringify(version.parameters))}</code></td>
+        </tr>`
+    )
+    .join("");
+  document.getElementById("strategy-versions-table").innerHTML = `
+    <table>
+      <thead><tr><th>版本</th><th>时间</th><th>名称</th><th>模板</th><th>市场</th><th>参数</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6">暂无版本历史</td></tr>'}</tbody>
     </table>
   `;
 }
@@ -2279,6 +2411,7 @@ async function updateUserPermission(id, permission, checked) {
 document.getElementById("login-form").addEventListener("submit", login);
 document.getElementById("logout-button").addEventListener("click", logout);
 document.getElementById("run-backtest").addEventListener("click", runBacktest);
+document.getElementById("run-walk-forward").addEventListener("click", () => runWalkForward().catch((error) => toast(error.message)));
 document.getElementById("run-grid-search").addEventListener("click", () => runGridSearch().catch((error) => toast(error.message)));
 document.getElementById("refresh-monitoring").addEventListener("click", () => loadMonitoring().catch((error) => toast(error.message)));
 document.getElementById("refresh-trades").addEventListener("click", () => loadMonitoring().catch((error) => toast(error.message)));
@@ -2295,6 +2428,7 @@ document.getElementById("api-key-form").addEventListener("submit", createApiKey)
 document.getElementById("create-user-form").addEventListener("submit", createUser);
 document.getElementById("change-password-form").addEventListener("submit", changePassword);
 document.getElementById("save-risk-settings").addEventListener("click", () => saveRiskSettings().catch((error) => toast(error.message)));
+document.getElementById("sync-symbol-rules").addEventListener("click", () => syncSymbolRules().catch((error) => toast(error.message)));
 document.getElementById("save-symbol-rule").addEventListener("click", () => saveSymbolRule().catch((error) => toast(error.message)));
 document.getElementById("fetch-market-data").addEventListener("click", () => fetchMarketData().catch((error) => toast(error.message)));
 document.getElementById("run-indicator-analysis").addEventListener("click", () => runIndicatorAnalysis().catch((error) => toast(error.message)));
@@ -2312,6 +2446,7 @@ document.getElementById("close-all-paper").addEventListener("click", () => close
 document.getElementById("dispatch-notifications").addEventListener("click", () => dispatchNotifications());
 document.getElementById("refresh-notifications").addEventListener("click", () => loadNotifications().catch((error) => toast(error.message)));
 document.getElementById("notification-channel-form").addEventListener("submit", createNotificationChannel);
+document.getElementById("symbol-rule-source-provider").addEventListener("change", renderSymbolRuleSources);
 document.getElementById("data-provider").addEventListener("change", () => updateDataSourceFields({ resetSymbol: true }));
 document.getElementById("data-symbol").addEventListener("change", () => {
   const source = selectedDataSource();
@@ -2352,6 +2487,7 @@ document.body.addEventListener("click", (event) => {
   const deleteWatchlistId = event.target.dataset?.deleteWatchlist;
   const editSymbolRuleId = event.target.dataset?.editSymbolRule;
   const viewBacktestId = event.target.dataset?.viewBacktest;
+  const viewStrategyVersionsId = event.target.dataset?.viewStrategyVersions;
   const defaultStrategyId = event.target.dataset?.defaultStrategy;
   const deleteStrategyId = event.target.dataset?.deleteStrategy;
   if (keyId) deleteApiKey(keyId).catch((error) => toast(error.message));
@@ -2371,6 +2507,7 @@ document.body.addEventListener("click", (event) => {
   if (deleteWatchlistId) deleteWatchlist(deleteWatchlistId).catch((error) => toast(error.message));
   if (editSymbolRuleId) editSymbolRule(editSymbolRuleId);
   if (viewBacktestId) viewBacktestReport(viewBacktestId).catch((error) => toast(error.message));
+  if (viewStrategyVersionsId) viewStrategyVersions(viewStrategyVersionsId).catch((error) => toast(error.message));
   if (defaultStrategyId) setDefaultStrategyConfig(defaultStrategyId).catch((error) => toast(error.message));
   if (deleteStrategyId) deleteStrategyConfig(deleteStrategyId).catch((error) => toast(error.message));
 });

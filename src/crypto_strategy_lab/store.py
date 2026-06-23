@@ -77,6 +77,7 @@ class Database:
                     strategy_type TEXT NOT NULL,
                     market_type TEXT NOT NULL DEFAULT 'spot',
                     parameters TEXT NOT NULL DEFAULT '{}',
+                    current_version INTEGER NOT NULL DEFAULT 1,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
@@ -84,10 +85,27 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS strategy_config_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    strategy_config_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    version INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    strategy_type TEXT NOT NULL,
+                    market_type TEXT NOT NULL DEFAULT 'spot',
+                    parameters TEXT NOT NULL DEFAULT '{}',
+                    change_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    UNIQUE (strategy_config_id, version),
+                    FOREIGN KEY (strategy_config_id) REFERENCES strategy_configs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS trade_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     strategy_config_id INTEGER,
+                    strategy_version INTEGER,
                     strategy_type TEXT NOT NULL,
                     run_mode TEXT NOT NULL DEFAULT 'backtest',
                     status TEXT NOT NULL DEFAULT 'completed',
@@ -365,6 +383,8 @@ class Database:
             )
             _ensure_column(conn, "users", "permission_grants", "TEXT NOT NULL DEFAULT '[]'")
             _ensure_column(conn, "users", "permission_revokes", "TEXT NOT NULL DEFAULT '[]'")
+            _ensure_column(conn, "strategy_configs", "current_version", "INTEGER NOT NULL DEFAULT 1")
+            _ensure_column(conn, "trade_runs", "strategy_version", "INTEGER")
             _ensure_column(conn, "trade_orders", "time_in_force", "TEXT NOT NULL DEFAULT 'GTC'")
             _ensure_column(conn, "trade_orders", "post_only", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(conn, "trade_orders", "reduce_only", "INTEGER NOT NULL DEFAULT 0")
@@ -632,9 +652,9 @@ class Database:
                 """
                 INSERT INTO strategy_configs (
                     user_id, name, strategy_type, market_type, parameters,
-                    is_default, is_active, created_at, updated_at
+                    current_version, is_default, is_active, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                VALUES (?, ?, ?, ?, ?, 1, ?, 1, ?, ?)
                 """,
                 (
                     user_id,
@@ -648,10 +668,54 @@ class Database:
                 ),
             )
             config_id = int(cursor.lastrowid)
+            self._insert_strategy_config_version(
+                conn,
+                strategy_config_id=config_id,
+                user_id=user_id,
+                version=1,
+                name=name,
+                strategy_type=strategy_type,
+                market_type=market_type,
+                parameters=parameters,
+                change_note="created",
+            )
         config = self.get_strategy_config(config_id, user_id=user_id, is_admin=True)
         if config is None:
             raise KeyError(config_id)
         return config
+
+    def _insert_strategy_config_version(
+        self,
+        conn: sqlite3.Connection,
+        strategy_config_id: int,
+        user_id: int,
+        version: int,
+        name: str,
+        strategy_type: str,
+        market_type: str,
+        parameters: dict[str, Any],
+        change_note: str = "",
+    ) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO strategy_config_versions (
+                strategy_config_id, user_id, version, name, strategy_type,
+                market_type, parameters, change_note, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                strategy_config_id,
+                user_id,
+                int(version),
+                name.strip(),
+                strategy_type.strip(),
+                market_type.strip(),
+                json.dumps(parameters, sort_keys=True),
+                change_note.strip(),
+                utc_now(),
+            ),
+        )
 
     def list_strategy_configs(self, user_id: int, include_all: bool = False) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -742,6 +806,11 @@ class Database:
         if not updates:
             return existing
 
+        versionable_change = any(item is not None for item in (name, strategy_type, parameters, market_type))
+        next_version = int(existing.get("current_version") or 1) + 1
+        if versionable_change:
+            updates.append("current_version = ?")
+            values.append(next_version)
         updates.append("updated_at = ?")
         values.append(utc_now())
         values.append(config_id)
@@ -750,8 +819,42 @@ class Database:
             if is_default:
                 conn.execute("UPDATE strategy_configs SET is_default = 0 WHERE user_id = ?", (owner_id,))
             conn.execute(f"UPDATE strategy_configs SET {', '.join(updates)} WHERE id = ?", values)
+            if versionable_change:
+                self._insert_strategy_config_version(
+                    conn,
+                    strategy_config_id=config_id,
+                    user_id=owner_id,
+                    version=next_version,
+                    name=name if name is not None else existing["name"],
+                    strategy_type=strategy_type if strategy_type is not None else existing["strategy_type"],
+                    market_type=market_type if market_type is not None else existing["market_type"],
+                    parameters=parameters if parameters is not None else existing["parameters"],
+                    change_note="updated",
+                )
 
         return self.get_strategy_config(config_id, user_id=user_id, is_admin=is_admin)
+
+    def list_strategy_config_versions(
+        self,
+        config_id: int,
+        user_id: int,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        config = self.get_strategy_config(config_id, user_id=user_id, is_admin=is_admin)
+        if not config:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT strategy_config_versions.*, users.email AS owner_email
+                FROM strategy_config_versions
+                JOIN users ON users.id = strategy_config_versions.user_id
+                WHERE strategy_config_versions.strategy_config_id = ?
+                ORDER BY strategy_config_versions.version DESC
+                """,
+                (config_id,),
+            ).fetchall()
+            return [_public_strategy_config_version(row) for row in rows]
 
     def delete_strategy_config(self, config_id: int, user_id: int, is_admin: bool = False) -> bool:
         existing = self.get_strategy_config(config_id, user_id=user_id, is_admin=is_admin)
@@ -774,6 +877,7 @@ class Database:
         status: str = "completed",
         market_type: str = "spot",
         strategy_config_id: int | None = None,
+        strategy_version: int | None = None,
         bars_file: str | None = None,
         events_file: str | None = None,
         started_at: str | None = None,
@@ -786,15 +890,16 @@ class Database:
             cursor = conn.execute(
                 """
                 INSERT INTO trade_runs (
-                    user_id, strategy_config_id, strategy_type, run_mode, status,
+                    user_id, strategy_config_id, strategy_version, strategy_type, run_mode, status,
                     market_type, bars_file, events_file, parameters, metrics,
                     started_at, finished_at, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
                     strategy_config_id,
+                    strategy_version,
                     strategy_type,
                     run_mode,
                     status,
@@ -2459,10 +2564,27 @@ def _public_strategy_config(row: sqlite3.Row) -> dict[str, Any]:
         "strategy_type": row["strategy_type"],
         "market_type": row["market_type"],
         "parameters": json.loads(row["parameters"] or "{}"),
+        "current_version": row["current_version"],
         "is_default": bool(row["is_default"]),
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def _public_strategy_config_version(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "strategy_config_id": row["strategy_config_id"],
+        "user_id": row["user_id"],
+        "owner_email": row["owner_email"],
+        "version": row["version"],
+        "name": row["name"],
+        "strategy_type": row["strategy_type"],
+        "market_type": row["market_type"],
+        "parameters": json.loads(row["parameters"] or "{}"),
+        "change_note": row["change_note"],
+        "created_at": row["created_at"],
     }
 
 
@@ -2473,6 +2595,7 @@ def _public_trade_run(row: sqlite3.Row) -> dict[str, Any]:
         "owner_email": row["owner_email"],
         "strategy_config_id": row["strategy_config_id"],
         "strategy_name": row["strategy_name"],
+        "strategy_version": row["strategy_version"],
         "strategy_type": row["strategy_type"],
         "run_mode": row["run_mode"],
         "status": row["status"],

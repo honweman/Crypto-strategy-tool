@@ -433,6 +433,119 @@ class BollingerRsiStrategy(Strategy):
         ]
 
 
+@dataclass(frozen=True)
+class FundingRateCarryConfig:
+    entry_funding_bps: float = 1.0
+    exit_funding_bps: float = 0.2
+    target_weight: float = 0.20
+    event_ttl_bars: int = 3
+
+
+class FundingRateCarryStrategy(Strategy):
+    """Funding/basis carry template driven by external funding-rate events."""
+
+    def __init__(self, config: FundingRateCarryConfig | None = None) -> None:
+        self.config = config or FundingRateCarryConfig()
+        self.active_targets: dict[str, tuple[float, int, float]] = {}
+        self.current_targets: dict[str, float] = defaultdict(float)
+
+    def on_external_event(self, event: ExternalEvent) -> list[TargetSignal]:
+        funding_bps = float(event.score)
+        if funding_bps >= self.config.entry_funding_bps:
+            target = clamp(self.config.target_weight, 0.0, 1.0)
+            self.active_targets[event.symbol] = (target, self.config.event_ttl_bars, funding_bps)
+            self.current_targets[event.symbol] = target
+            return [
+                TargetSignal(
+                    timestamp=event.timestamp,
+                    symbol=event.symbol,
+                    target_weight=target,
+                    confidence=min(1.0, abs(funding_bps) / max(abs(self.config.entry_funding_bps), 1e-9)),
+                    reason=f"funding_carry:funding_bps={funding_bps:.4f}",
+                )
+            ]
+        if funding_bps <= self.config.exit_funding_bps and self.current_targets[event.symbol] > 0:
+            self.active_targets.pop(event.symbol, None)
+            self.current_targets[event.symbol] = 0.0
+            return [
+                TargetSignal(
+                    timestamp=event.timestamp,
+                    symbol=event.symbol,
+                    target_weight=0.0,
+                    confidence=1.0,
+                    reason=f"funding_carry_exit:funding_bps={funding_bps:.4f}",
+                )
+            ]
+        return []
+
+    def on_bar(self, bar: Bar) -> list[TargetSignal]:
+        if bar.symbol not in self.active_targets:
+            return []
+        target, ttl, funding_bps = self.active_targets[bar.symbol]
+        ttl -= 1
+        if ttl > 0:
+            self.active_targets[bar.symbol] = (target, ttl, funding_bps)
+            return []
+        self.active_targets.pop(bar.symbol, None)
+        if self.current_targets[bar.symbol] <= 0:
+            return []
+        self.current_targets[bar.symbol] = 0.0
+        return [
+            TargetSignal(
+                timestamp=bar.timestamp,
+                symbol=bar.symbol,
+                target_weight=0.0,
+                confidence=1.0,
+                reason=f"funding_carry_ttl_expired:funding_bps={funding_bps:.4f}",
+            )
+        ]
+
+
+@dataclass(frozen=True)
+class MarketMakingConfig:
+    lookback: int = 20
+    min_spread_bps: float = 8.0
+    max_volatility_bps: float = 120.0
+    inventory_target_weight: float = 0.10
+
+
+class MarketMakingStrategy(Strategy):
+    """Passive market-making participation template using spread and volatility filters."""
+
+    def __init__(self, config: MarketMakingConfig | None = None) -> None:
+        self.config = config or MarketMakingConfig()
+        self.closes: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=self.config.lookback + 1))
+        self.current_targets: dict[str, float] = defaultdict(float)
+
+    def on_bar(self, bar: Bar) -> list[TargetSignal]:
+        prices = self.closes[bar.symbol]
+        prices.append(bar.close)
+        if len(prices) < self.config.lookback + 1:
+            return []
+
+        spread_bps = ((bar.high - bar.low) / bar.close * 10_000) if bar.close > 0 else 0.0
+        volatility_bps = _rolling_volatility_bps(prices)
+        target = self.current_targets[bar.symbol]
+        if spread_bps >= self.config.min_spread_bps and volatility_bps <= self.config.max_volatility_bps:
+            target = clamp(self.config.inventory_target_weight, 0.0, 1.0)
+        elif volatility_bps > self.config.max_volatility_bps or spread_bps < self.config.min_spread_bps * 0.5:
+            target = 0.0
+
+        previous = self.current_targets[bar.symbol]
+        if abs(target - previous) < 1e-9:
+            return []
+        self.current_targets[bar.symbol] = target
+        return [
+            TargetSignal(
+                timestamp=bar.timestamp,
+                symbol=bar.symbol,
+                target_weight=target,
+                confidence=min(1.0, spread_bps / max(self.config.min_spread_bps, 1e-9)),
+                reason=f"market_making:spread_bps={spread_bps:.2f};vol_bps={volatility_bps:.2f}",
+            )
+        ]
+
+
 def _rsi(prices: deque[float]) -> float | None:
     if len(prices) < 2:
         return None
@@ -453,3 +566,17 @@ def _rsi(prices: deque[float]) -> float | None:
         return 100.0
     relative_strength = average_gain / average_loss
     return 100.0 - (100.0 / (1.0 + relative_strength))
+
+
+def _rolling_volatility_bps(prices: deque[float]) -> float:
+    price_list = list(prices)
+    returns = [
+        (current / previous - 1.0)
+        for previous, current in zip(price_list, price_list[1:])
+        if previous > 0
+    ]
+    if not returns:
+        return 0.0
+    mean = sum(returns) / len(returns)
+    variance = sum((value - mean) ** 2 for value in returns) / len(returns)
+    return math.sqrt(variance) * 10_000

@@ -2,11 +2,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi.testclient import TestClient
 
+from crypto_strategy_lab.exchange_rules import ExchangeSymbolRule
 from crypto_strategy_lab.web import create_app
 
 
@@ -73,6 +75,8 @@ class WebTests(unittest.TestCase):
             catalog = client.get("/api/strategies/catalog")
             self.assertEqual(catalog.status_code, 200)
             self.assertGreaterEqual(len(catalog.json()), 3)
+            self.assertIn("funding_rate_carry", {item["id"] for item in catalog.json()})
+            self.assertIn("market_making", {item["id"] for item in catalog.json()})
 
             data_sources = client.get("/api/data-sources/catalog")
             self.assertEqual(data_sources.status_code, 200)
@@ -191,6 +195,18 @@ class WebTests(unittest.TestCase):
             )
             self.assertEqual(strategy_config.status_code, 200)
             self.assertTrue(strategy_config.json()["is_default"])
+            self.assertEqual(strategy_config.json()["current_version"], 1)
+            versions = client.get(f"/api/strategy-configs/{strategy_config.json()['id']}/versions")
+            self.assertEqual(versions.status_code, 200)
+            self.assertEqual(versions.json()[0]["version"], 1)
+            patched_strategy = client.patch(
+                f"/api/strategy-configs/{strategy_config.json()['id']}",
+                json={"parameters": {"positive_threshold": 0.65, "negative_threshold": -0.6, "target_weight": 0.2, "event_ttl_bars": 4}},
+            )
+            self.assertEqual(patched_strategy.status_code, 200)
+            self.assertEqual(patched_strategy.json()["current_version"], 2)
+            versions = client.get(f"/api/strategy-configs/{strategy_config.json()['id']}/versions")
+            self.assertEqual([item["version"] for item in versions.json()], [2, 1])
 
             configs = client.get("/api/strategy-configs?all=1")
             self.assertEqual(configs.status_code, 200)
@@ -243,6 +259,22 @@ class WebTests(unittest.TestCase):
             self.assertEqual(grid_search.json()["combination_count"], 2)
             self.assertEqual(grid_search.json()["results"][0]["rank"], 1)
 
+            walk_forward = client.post(
+                "/api/backtests/walk-forward",
+                json={
+                    "cash": 10_000,
+                    "strategy_config_id": strategy_config.json()["id"],
+                    "train_events": 10,
+                    "test_events": 5,
+                    "step_events": 5,
+                    "max_windows": 3,
+                },
+            )
+            self.assertEqual(walk_forward.status_code, 200)
+            self.assertIn(walk_forward.json()["walk_forward"]["status"], {"completed", "skipped"})
+            self.assertEqual(walk_forward.json()["run"]["run_mode"], "walk_forward")
+            self.assertEqual(walk_forward.json()["run"]["strategy_version"], 2)
+
             run_detail = client.get(f"/api/trade-runs/{run_id}")
             self.assertEqual(run_detail.status_code, 200)
             self.assertEqual(run_detail.json()["id"], run_id)
@@ -261,12 +293,12 @@ class WebTests(unittest.TestCase):
 
             summary = client.get("/api/monitoring/summary?all=1")
             self.assertEqual(summary.status_code, 200)
-            self.assertEqual(summary.json()["total_runs"], 1)
+            self.assertEqual(summary.json()["total_runs"], 2)
             self.assertGreaterEqual(summary.json()["total_trades"], 1)
 
             runs = client.get("/api/trade-runs?all=1")
             self.assertEqual(runs.status_code, 200)
-            self.assertEqual(len(runs.json()), 1)
+            self.assertEqual(len(runs.json()), 2)
             backtest_runs = client.get("/api/trade-runs?all=1&run_mode=backtest")
             self.assertEqual(backtest_runs.status_code, 200)
             self.assertEqual(len(backtest_runs.json()), 1)
@@ -346,6 +378,29 @@ class WebTests(unittest.TestCase):
             symbol_rules = client.get("/api/symbol-rules?exchange=paper&market_type=spot&symbol=RULEUSDT")
             self.assertEqual(symbol_rules.status_code, 200)
             self.assertEqual(len(symbol_rules.json()), 1)
+            rule_sources = client.get("/api/symbol-rules/sources")
+            self.assertEqual(rule_sources.status_code, 200)
+            self.assertIn("binance_spot", {item["id"] for item in rule_sources.json()})
+            with patch(
+                "crypto_strategy_lab.web.fetch_exchange_symbol_rules",
+                return_value=[
+                    ExchangeSymbolRule(
+                        exchange="binance",
+                        market_type="spot",
+                        symbol="MOCKUSDT",
+                        min_quantity=0.1,
+                        quantity_step=0.1,
+                        price_tick=0.01,
+                        min_notional=5.0,
+                        max_leverage=1.0,
+                        source="mock",
+                    )
+                ],
+            ):
+                synced_rules = client.post("/api/symbol-rules/sync", json={"provider": "binance_spot", "symbol": "MOCKUSDT", "limit": 1})
+            self.assertEqual(synced_rules.status_code, 200)
+            self.assertEqual(synced_rules.json()["saved_count"], 1)
+            self.assertEqual(synced_rules.json()["rules"][0]["symbol"], "MOCKUSDT")
 
             rule_quantity_preflight = client.post(
                 "/api/trading/preflight",

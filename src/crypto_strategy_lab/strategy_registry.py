@@ -12,6 +12,10 @@ from .strategy import (
     EventScoreStrategy,
     FixedWeightConfig,
     FixedWeightStrategy,
+    FundingRateCarryConfig,
+    FundingRateCarryStrategy,
+    MarketMakingConfig,
+    MarketMakingStrategy,
     MovingAverageCrossoverConfig,
     MovingAverageCrossoverStrategy,
     RsiMeanReversionConfig,
@@ -139,6 +143,32 @@ STRATEGY_DEFINITIONS: dict[str, StrategyDefinition] = {
             StrategyParameter("target_weight", "目标仓位", "float", 0.20, 0.0, 1.0, 0.01),
         ],
     ),
+    "funding_rate_carry": StrategyDefinition(
+        id="funding_rate_carry",
+        name="资金费率套利模板",
+        description="由资金费率/基差事件触发仓位，资金费优势达到阈值时参与，优势消失或 TTL 到期退出。",
+        market_types=["perpetual-long-only"],
+        public_basis="公开套利模板：funding-rate carry / basis carry。当前实现是单腿研究代理，实盘多腿需组合引擎。",
+        parameters=[
+            StrategyParameter("entry_funding_bps", "入场资金费 bps", "float", 1.0, -100.0, 100.0, 0.1),
+            StrategyParameter("exit_funding_bps", "退出资金费 bps", "float", 0.2, -100.0, 100.0, 0.1),
+            StrategyParameter("target_weight", "目标仓位", "float", 0.20, 0.0, 1.0, 0.01),
+            StrategyParameter("event_ttl_bars", "事件有效 Bar 数", "int", 3, 1, 100, 1),
+        ],
+    ),
+    "market_making": StrategyDefinition(
+        id="market_making",
+        name="做市策略模板",
+        description="用 K 线高低点近似价差，低波动且价差足够时参与，波动升高或价差收窄时退出。",
+        market_types=["spot", "perpetual-long-only"],
+        public_basis="公开做市模板：passive market making / inventory-aware quoting。当前回测使用价差代理，不模拟完整订单簿排队。",
+        parameters=[
+            StrategyParameter("lookback", "波动窗口", "int", 20, 2, 300, 1),
+            StrategyParameter("min_spread_bps", "最小价差 bps", "float", 8.0, 0.0, 1000.0, 0.5),
+            StrategyParameter("max_volatility_bps", "最大波动 bps", "float", 120.0, 0.0, 5000.0, 5.0),
+            StrategyParameter("inventory_target_weight", "库存目标权重", "float", 0.10, 0.0, 1.0, 0.01),
+        ],
+    ),
 }
 
 
@@ -186,6 +216,10 @@ def create_strategy(strategy_type: str, parameters: dict[str, Any] | None = None
         return BollingerRsiStrategy(BollingerRsiConfig(**params))
     if strategy_type == "fixed_weight":
         return FixedWeightStrategy(FixedWeightConfig(**params))
+    if strategy_type == "funding_rate_carry":
+        return FundingRateCarryStrategy(FundingRateCarryConfig(**params))
+    if strategy_type == "market_making":
+        return MarketMakingStrategy(MarketMakingConfig(**params))
     raise ValueError(f"unknown strategy type: {strategy_type}")
 
 
@@ -212,3 +246,5 @@ def _validate_cross_parameter_rules(strategy_type: str, params: dict[str, Any]) 
         raise ValueError("exit_window must be <= breakout_window")
     if strategy_type in {"rsi_mean_reversion", "bollinger_rsi"} and params["oversold_rsi"] >= params["exit_rsi"]:
         raise ValueError("oversold_rsi must be < exit_rsi")
+    if strategy_type == "funding_rate_carry" and params["exit_funding_bps"] >= params["entry_funding_bps"]:
+        raise ValueError("exit_funding_bps must be < entry_funding_bps")

@@ -69,7 +69,11 @@ class SecurityStoreTests(unittest.TestCase):
             )
             self.assertEqual(config["name"], "event config")
             self.assertTrue(config["is_default"])
+            self.assertEqual(config["current_version"], 1)
             self.assertEqual(db.list_strategy_configs(user["id"])[0]["strategy_type"], "event_score")
+            versions = db.list_strategy_config_versions(config["id"], user_id=user["id"])
+            self.assertEqual(len(versions), 1)
+            self.assertEqual(versions[0]["version"], 1)
 
             updated = db.update_strategy_config(
                 config["id"],
@@ -77,6 +81,9 @@ class SecurityStoreTests(unittest.TestCase):
                 parameters={"positive_threshold": 0.65, "negative_threshold": -0.65, "target_weight": 0.2},
             )
             self.assertEqual(updated["parameters"]["target_weight"], 0.2)
+            self.assertEqual(updated["current_version"], 2)
+            versions = db.list_strategy_config_versions(config["id"], user_id=user["id"])
+            self.assertEqual([item["version"] for item in versions], [2, 1])
             self.assertTrue(db.delete_strategy_config(config["id"], user_id=user["id"]))
             self.assertEqual(db.list_strategy_configs(user["id"]), [])
 
@@ -86,7 +93,9 @@ class SecurityStoreTests(unittest.TestCase):
                 parameters={"target_weight": 0.2},
                 metrics={"ending_equity": 10100, "total_return": 0.01, "trade_count": 1},
                 bars_file="data/sample_bars.csv",
+                strategy_version=2,
             )
+            self.assertEqual(run["strategy_version"], 2)
             records = db.create_trade_records(
                 run_id=run["id"],
                 user_id=user["id"],

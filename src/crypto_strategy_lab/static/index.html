@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=16" />
+    <link rel="stylesheet" href="/static/app.css?v=17" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -259,7 +259,15 @@
                 <p class="eyebrow">Instrument Rules</p>
                 <h2>交易对规则</h2>
               </div>
-              <button id="save-symbol-rule" type="button">保存规则</button>
+              <div class="button-row">
+                <button id="sync-symbol-rules" class="secondary" type="button">同步交易所规则</button>
+                <button id="save-symbol-rule" type="button">保存规则</button>
+              </div>
+            </div>
+            <div class="form-grid compact-form">
+              <label>同步来源<select id="symbol-rule-source-provider"></select></label>
+              <label>指定交易对<input id="symbol-rule-sync-symbol" placeholder="留空同步多条" /></label>
+              <label>同步数量<input id="symbol-rule-sync-limit" type="number" value="200" min="1" max="2000" step="1" /></label>
             </div>
             <div class="form-grid compact-form">
               <label>交易所<input id="symbol-rule-exchange" value="paper" /></label>
@@ -434,6 +442,7 @@
             <div id="strategy-description" class="result-box"></div>
             <div id="strategy-param-grid" class="form-grid"></div>
             <div id="strategy-configs-table" class="table-wrap"></div>
+            <div id="strategy-versions-table" class="table-wrap"></div>
           </section>
 
           <section id="backtest-section" class="panel">
@@ -464,11 +473,20 @@
               <label>杠杆<input id="leverage" type="number" value="1" min="1" max="125" step="0.1" /></label>
               <label>维持保证金率<input id="maintenance-margin-ratio" type="number" value="0.005" min="0" max="1" step="0.001" /></label>
               <label>样本外比例<input id="out-of-sample-ratio" type="number" value="0.3" min="0" max="0.9" step="0.05" /></label>
+              <label>WF 训练事件数<input id="walk-forward-train-events" type="number" value="120" min="2" step="1" /></label>
+              <label>WF 测试事件数<input id="walk-forward-test-events" type="number" value="40" min="1" step="1" /></label>
+              <label>WF 步长事件数<input id="walk-forward-step-events" type="number" value="40" min="1" step="1" /></label>
+              <label>WF 最大窗口<input id="walk-forward-max-windows" type="number" value="12" min="1" max="100" step="1" /></label>
               <label>单笔最大名义额<input id="backtest-max-order-notional" type="number" value="2500" min="0" step="100" /></label>
               <label>单币最大权重<input id="backtest-max-symbol-weight" type="number" value="0.35" min="0" max="1" step="0.01" /></label>
               <label>总敞口上限<input id="backtest-max-gross-exposure" type="number" value="0.8" min="0" max="1" step="0.01" /></label>
             </div>
             <div id="backtest-result" class="result-box"></div>
+            <div class="subhead">
+              <h3>Walk-forward 验证</h3>
+              <button id="run-walk-forward" type="button">运行 Walk-forward</button>
+            </div>
+            <div id="walk-forward-result" class="result-box compact-result"></div>
             <div class="subhead">
               <h3>参数网格优化</h3>
             </div>
@@ -545,6 +563,6 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=16"></script>
+    <script src="/static/app.js?v=17"></script>
   </body>
 </html>

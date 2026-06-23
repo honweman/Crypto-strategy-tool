@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from .broker import SimulatedBroker
 from .data import CsvBarDataSource, CsvExternalEventSource, MergedEventFeed
 from .engine import BacktestConfig, BacktestEngine
+from .exchange_rules import fetch_exchange_symbol_rules, list_rule_sources
 from .execution import PaperExchangeConnector
 from .indicators import calculate_indicator_points, indicator_catalog
 from .market_data import (
@@ -141,6 +142,13 @@ class BacktestRunRequest(BaseModel):
     max_gross_exposure: float = 0.80
 
 
+class WalkForwardBacktestRequest(BacktestRunRequest):
+    train_events: int = Field(default=120, ge=2, le=100_000)
+    test_events: int = Field(default=40, ge=1, le=100_000)
+    step_events: int = Field(default=40, ge=1, le=100_000)
+    max_windows: int = Field(default=12, ge=1, le=100)
+
+
 class GridSearchRequest(BaseModel):
     bars_file: str = "data/sample_bars.csv"
     events_file: Optional[str] = "data/sample_events.csv"
@@ -249,6 +257,12 @@ class SymbolRuleRequest(BaseModel):
     max_leverage: float = Field(default=1.0, ge=1, le=125)
     is_active: bool = True
     source: str = "manual"
+
+
+class SymbolRuleSyncRequest(BaseModel):
+    provider: str = "binance_spot"
+    symbol: Optional[str] = None
+    limit: int = Field(default=200, ge=1, le=2000)
 
 
 class RealtimeSignalRequest(BaseModel):
@@ -715,6 +729,26 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
         include_all = all_users and has_user_permission(user, MANAGE_ALL_STRATEGIES)
         return db.list_strategy_configs(user["id"], include_all=include_all)
 
+    @app.get("/api/strategy-configs/{config_id}/versions")
+    def strategy_config_versions(
+        config_id: int,
+        user: dict = Depends(require_any(VIEW_STRATEGIES, MANAGE_OWN_STRATEGIES, MANAGE_ALL_STRATEGIES)),
+    ) -> list[dict]:
+        versions = db.list_strategy_config_versions(
+            config_id,
+            user_id=user["id"],
+            is_admin=has_user_permission(user, MANAGE_ALL_STRATEGIES),
+        )
+        if not versions:
+            config = db.get_strategy_config(
+                config_id,
+                user_id=user["id"],
+                is_admin=has_user_permission(user, MANAGE_ALL_STRATEGIES),
+            )
+            if not config:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="strategy_config_not_found")
+        return versions
+
     @app.post("/api/strategy-configs")
     def create_strategy_config(
         payload: CreateStrategyConfigRequest,
@@ -1004,6 +1038,60 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
             **_audit_context(request),
         )
         return sync_run
+
+    @app.get("/api/symbol-rules/sources")
+    def symbol_rule_sources(_: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM))) -> list[dict]:
+        return list_rule_sources()
+
+    @app.post("/api/symbol-rules/sync")
+    async def sync_symbol_rules(
+        payload: SymbolRuleSyncRequest,
+        request: Request,
+        user: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> dict:
+        try:
+            fetched_rules = await fetch_exchange_symbol_rules(
+                provider=payload.provider,
+                symbol=payload.symbol,
+                limit=payload.limit,
+            )
+        except (ValueError, httpx.HTTPError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        saved_rules = [
+            db.upsert_symbol_rule(
+                exchange=rule.exchange,
+                market_type=rule.market_type,
+                symbol=rule.symbol,
+                min_quantity=rule.min_quantity,
+                quantity_step=rule.quantity_step,
+                price_tick=rule.price_tick,
+                min_notional=rule.min_notional,
+                max_notional=rule.max_notional,
+                max_leverage=rule.max_leverage,
+                is_active=True,
+                source=rule.source,
+            )
+            for rule in fetched_rules
+        ]
+        db.create_audit_log(
+            user_id=user["id"],
+            action="symbol_rule.sync",
+            entity_type="symbol_rule",
+            status="ok",
+            detail={
+                "provider": payload.provider,
+                "symbol": payload.symbol,
+                "requested_limit": payload.limit,
+                "saved_count": len(saved_rules),
+            },
+            **_audit_context(request),
+        )
+        return {
+            "provider": payload.provider,
+            "saved_count": len(saved_rules),
+            "rules": saved_rules[:50],
+        }
 
     @app.get("/api/symbol-rules")
     def symbol_rules(
@@ -1525,10 +1613,13 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
 
         strategy_type, parameters, strategy_config = _resolve_strategy_request(db, user, payload)
         strategy_config_id = strategy_config["id"] if strategy_config else None
+        strategy_version = strategy_config["current_version"] if strategy_config else None
         market_type = strategy_config["market_type"] if strategy_config else payload.market_type
 
         result = _run_backtest_result(strategy_type, parameters, payload, feed_events, market_type)
         metrics_payload = _metrics_payload(result.metrics)
+        if strategy_version is not None:
+            metrics_payload["strategy_version"] = strategy_version
         validation_payload = _sample_validation_payload(strategy_type, parameters, payload, feed_events, market_type)
         if validation_payload:
             metrics_payload["validation"] = validation_payload
@@ -1544,6 +1635,7 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
             events_file=str(payload.events_file) if payload.events_file else None,
             parameters=parameters,
             metrics=metrics_payload,
+            strategy_version=strategy_version,
             started_at=started_at,
             finished_at=utc_now(),
         )
@@ -1590,6 +1682,59 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
             ],
             "rejected_orders": [{"reason": item.reason} for item in result.rejected_orders[-25:]],
             "validation": validation_payload,
+        }
+
+    @app.post("/api/backtests/walk-forward")
+    def walk_forward_backtest(payload: WalkForwardBacktestRequest, user: dict = Depends(require(RUN_BACKTESTS))) -> dict:
+        started_at = utc_now()
+        bars_file = _safe_project_path(payload.bars_file)
+        events_file = _safe_project_path(payload.events_file) if payload.events_file else None
+
+        sources = [CsvBarDataSource(bars_file)]
+        if events_file and events_file.exists():
+            sources.append(CsvExternalEventSource(events_file))
+        feed_events = list(MergedEventFeed(sources))
+
+        strategy_type, parameters, strategy_config = _resolve_strategy_request(db, user, payload)
+        strategy_config_id = strategy_config["id"] if strategy_config else None
+        strategy_version = strategy_config["current_version"] if strategy_config else None
+        market_type = strategy_config["market_type"] if strategy_config else payload.market_type
+        walk_forward = _walk_forward_payload(strategy_type, parameters, payload, feed_events, market_type)
+        metrics_payload = {
+            "strategy_version": strategy_version,
+            "walk_forward": walk_forward,
+            "window_count": walk_forward["window_count"],
+            "average_test_return": walk_forward.get("average_test_return", 0.0),
+            "worst_test_drawdown": walk_forward.get("worst_test_drawdown", 0.0),
+            "consistency_ratio": walk_forward.get("consistency_ratio", 0.0),
+            "total_test_trades": walk_forward.get("total_test_trades", 0),
+        }
+        run_record = db.create_trade_run(
+            user_id=user["id"],
+            strategy_config_id=strategy_config_id,
+            strategy_version=strategy_version,
+            strategy_type=strategy_type,
+            run_mode="walk_forward",
+            status=walk_forward["status"],
+            market_type=market_type,
+            bars_file=str(payload.bars_file),
+            events_file=str(payload.events_file) if payload.events_file else None,
+            parameters=parameters,
+            metrics=metrics_payload,
+            started_at=started_at,
+            finished_at=utc_now(),
+        )
+        return {
+            "run": run_record,
+            "strategy": {
+                "strategy_type": strategy_type,
+                "parameters": parameters,
+                "config": strategy_config,
+                "market_type": market_type,
+                "strategy_version": strategy_version,
+            },
+            "metrics": metrics_payload,
+            "walk_forward": walk_forward,
         }
 
     @app.post("/api/backtests/grid-search")
@@ -1900,6 +2045,7 @@ def _execute_strategy_paper(db: Database, user: dict, payload: AutoPaperExecuteR
     )
     result = engine.run(MergedEventFeed(sources))
     strategy_config_id = strategy_config["id"] if strategy_config else None
+    strategy_version = strategy_config["current_version"] if strategy_config else None
     market_type = strategy_config["market_type"] if strategy_config else "spot"
 
     applied = []
@@ -1921,9 +2067,12 @@ def _execute_strategy_paper(db: Database, user: dict, payload: AutoPaperExecuteR
         "total_fees": sum(fill.fee for fill in result.fills),
         "ending_cash": db.get_or_create_paper_account(user["id"])["cash"],
     }
+    if strategy_version is not None:
+        metrics["strategy_version"] = strategy_version
     run = db.create_trade_run(
         user_id=user["id"],
         strategy_config_id=strategy_config_id,
+        strategy_version=strategy_version,
         strategy_type=strategy_type,
         run_mode="paper",
         status="completed",
@@ -3154,6 +3303,85 @@ def _sample_validation_payload(
         "out_of_sample_ratio": payload.out_of_sample_ratio,
         "in_sample": _metrics_payload(in_sample.metrics),
         "out_of_sample": _metrics_payload(out_of_sample.metrics),
+    }
+
+
+def _walk_forward_payload(
+    strategy_type: str,
+    parameters: dict[str, Any],
+    payload: WalkForwardBacktestRequest,
+    feed_events: list,
+    market_type: str,
+) -> dict[str, Any]:
+    train_events = int(payload.train_events)
+    test_events = int(payload.test_events)
+    step_events = int(payload.step_events)
+    if len(feed_events) < train_events + test_events:
+        return {
+            "status": "skipped",
+            "reason": "not_enough_events",
+            "event_count": len(feed_events),
+            "train_events": train_events,
+            "test_events": test_events,
+            "step_events": step_events,
+            "window_count": 0,
+            "windows": [],
+        }
+
+    windows: list[dict[str, Any]] = []
+    start = 0
+    while len(windows) < int(payload.max_windows):
+        train_start = start
+        train_end = train_start + train_events
+        test_end = train_end + test_events
+        if test_end > len(feed_events):
+            break
+        train_result = _run_backtest_result(strategy_type, parameters, payload, feed_events[train_start:train_end], market_type)
+        test_result = _run_backtest_result(strategy_type, parameters, payload, feed_events[train_end:test_end], market_type)
+        windows.append(
+            {
+                "index": len(windows) + 1,
+                "train_start": train_start,
+                "train_end": train_end,
+                "test_start": train_end,
+                "test_end": test_end,
+                "train": _metrics_payload(train_result.metrics),
+                "test": _metrics_payload(test_result.metrics),
+                "test_fill_count": len(test_result.fills),
+                "test_rejected_order_count": len(test_result.rejected_orders),
+            }
+        )
+        start += step_events
+
+    if not windows:
+        return {
+            "status": "skipped",
+            "reason": "no_complete_windows",
+            "event_count": len(feed_events),
+            "train_events": train_events,
+            "test_events": test_events,
+            "step_events": step_events,
+            "window_count": 0,
+            "windows": [],
+        }
+
+    test_returns = [float(window["test"]["total_return"]) for window in windows]
+    test_drawdowns = [float(window["test"]["max_drawdown"]) for window in windows]
+    positive_windows = sum(1 for value in test_returns if value > 0)
+    return {
+        "status": "completed",
+        "event_count": len(feed_events),
+        "train_events": train_events,
+        "test_events": test_events,
+        "step_events": step_events,
+        "window_count": len(windows),
+        "average_test_return": sum(test_returns) / len(test_returns),
+        "worst_test_return": min(test_returns),
+        "best_test_return": max(test_returns),
+        "worst_test_drawdown": max(test_drawdowns),
+        "consistency_ratio": positive_windows / len(windows),
+        "total_test_trades": sum(int(window["test"]["trade_count"]) for window in windows),
+        "windows": windows,
     }
 
 
