@@ -23,6 +23,8 @@ const state = {
   rolePermissions: {},
   permissionCatalog: [],
   activePage: "status",
+  loadedPages: {},
+  loadingPages: {},
 };
 
 const PERMISSIONS = {
@@ -162,6 +164,9 @@ function setActivePage(page = state.activePage) {
   if (state.user && window.location.hash !== `#${nextPage}`) {
     window.history.replaceState(null, "", `#${nextPage}`);
   }
+  if (state.user) {
+    loadPageData(nextPage).catch((error) => toast(error.message));
+  }
 }
 
 async function api(path, options = {}) {
@@ -300,32 +305,59 @@ async function loadSession() {
     applySessionPayload(data);
     await loadStrategyCatalog();
     renderShell();
-    await Promise.all([
-      loadMonitoring(),
-      loadPaperTrading(),
-      loadOrderHistory(),
-      loadDataSources(),
-      loadMarketQuoteSources(),
-      loadIndicatorCatalog(),
-      loadWatchlists(),
-      loadStrategyConfigs(),
-      loadBacktestHistory(),
-      loadRiskSettings(),
-      loadSymbolRuleSources(),
-      loadSymbolRules(),
-      loadApiKeys(),
-      loadUsers(),
-      loadAuditLogs(),
-      loadExchangeSyncRuns(),
-      loadRealtime(),
-      loadExecutionEvents(),
-      loadAutomationStatus(),
-      loadNotifications(),
-    ]);
     showApp();
   } catch (error) {
     showLogin();
   }
+}
+
+async function loadPageData(page, options = {}) {
+  const targetPage = ["status", "trades", "config"].includes(page) ? page : "status";
+  if (!isPageAllowed(targetPage)) return;
+  if (!options.force && state.loadedPages[targetPage]) return;
+  if (state.loadingPages[targetPage]) return state.loadingPages[targetPage];
+
+  const loaders = {
+    status: [
+      () => loadMonitoring({ includeTradeRecords: false }),
+      () => loadPaperTrading(),
+      () => loadStrategyConfigs(),
+      () => loadRealtime(),
+    ],
+    trades: [
+      () => loadMonitoring({ includeTradeRecords: true }),
+      () => loadOrderHistory(),
+      () => loadPaperTrading(),
+      () => loadExecutionEvents(),
+      () => loadNotifications(),
+    ],
+    config: [
+      () => loadDataSources(),
+      () => loadMarketQuoteSources(),
+      () => loadIndicatorCatalog(),
+      () => loadWatchlists(),
+      () => loadStrategyConfigs(),
+      () => loadBacktestHistory(),
+      () => loadRiskSettings(),
+      () => loadSymbolRuleSources(),
+      () => loadSymbolRules(),
+      () => loadApiKeys(),
+      () => loadUsers(),
+      () => loadAuditLogs(),
+      () => loadExchangeSyncRuns(),
+      () => loadAutomationStatus(),
+      () => loadNotifications(),
+    ],
+  };
+
+  state.loadingPages[targetPage] = Promise.all(loaders[targetPage].map((loader) => loader()))
+    .then(() => {
+      state.loadedPages[targetPage] = true;
+    })
+    .finally(() => {
+      delete state.loadingPages[targetPage];
+    });
+  return state.loadingPages[targetPage];
 }
 
 function renderShell() {
@@ -407,29 +439,10 @@ async function login(event) {
       }),
     });
     applySessionPayload(data);
+    state.loadedPages = {};
+    state.loadingPages = {};
     await loadStrategyCatalog();
     renderShell();
-    await Promise.all([
-      loadMonitoring(),
-      loadPaperTrading(),
-      loadOrderHistory(),
-      loadDataSources(),
-      loadIndicatorCatalog(),
-      loadWatchlists(),
-      loadStrategyConfigs(),
-      loadBacktestHistory(),
-      loadRiskSettings(),
-      loadSymbolRuleSources(),
-      loadSymbolRules(),
-      loadApiKeys(),
-      loadUsers(),
-      loadAuditLogs(),
-      loadExchangeSyncRuns(),
-      loadRealtime(),
-      loadExecutionEvents(),
-      loadAutomationStatus(),
-      loadNotifications(),
-    ]);
     showApp();
   } catch (error) {
     document.getElementById("login-error").textContent = "登录失败";
@@ -442,6 +455,8 @@ async function logout() {
   state.permissions = [];
   state.rolePermissions = {};
   state.permissionCatalog = [];
+  state.loadedPages = {};
+  state.loadingPages = {};
   showLogin();
 }
 
@@ -716,7 +731,8 @@ function renderGridSearchResult(data) {
   `;
 }
 
-async function loadMonitoring() {
+async function loadMonitoring(options = {}) {
+  const includeTradeRecords = options.includeTradeRecords !== false;
   const tasks = [];
   if (hasPermission(PERMISSIONS.VIEW_MONITORING)) {
     tasks.push(
@@ -728,7 +744,7 @@ async function loadMonitoring() {
       )
     );
   }
-  if (hasTradePageAccess()) {
+  if (includeTradeRecords && hasTradePageAccess()) {
     tasks.push(api(`/api/trade-records${monitoringQuery(50)}`).then(renderTradeRecords));
   }
   await Promise.all(tasks);
@@ -2701,8 +2717,8 @@ document.getElementById("logout-button").addEventListener("click", logout);
 document.getElementById("run-backtest").addEventListener("click", runBacktest);
 document.getElementById("run-walk-forward").addEventListener("click", () => runWalkForward().catch((error) => toast(error.message)));
 document.getElementById("run-grid-search").addEventListener("click", () => runGridSearch().catch((error) => toast(error.message)));
-document.getElementById("refresh-monitoring").addEventListener("click", () => loadMonitoring().catch((error) => toast(error.message)));
-document.getElementById("refresh-trades").addEventListener("click", () => loadMonitoring().catch((error) => toast(error.message)));
+document.getElementById("refresh-monitoring").addEventListener("click", () => loadMonitoring({ includeTradeRecords: false }).catch((error) => toast(error.message)));
+document.getElementById("refresh-trades").addEventListener("click", () => loadMonitoring({ includeTradeRecords: true }).catch((error) => toast(error.message)));
 document.getElementById("refresh-orders").addEventListener("click", () => loadOrderHistory().catch((error) => toast(error.message)));
 document.getElementById("refresh-paper").addEventListener("click", () => loadPaperTrading().catch((error) => toast(error.message)));
 document.getElementById("refresh-market-snapshot").addEventListener("click", () => refreshMarketSnapshot().catch((error) => toast(error.message)));
