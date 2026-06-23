@@ -77,6 +77,9 @@ class WebTests(unittest.TestCase):
             self.assertGreaterEqual(len(catalog.json()), 3)
             self.assertIn("funding_rate_carry", {item["id"] for item in catalog.json()})
             self.assertIn("market_making", {item["id"] for item in catalog.json()})
+            self.assertIn("pure_market_making", {item["id"] for item in catalog.json()})
+            self.assertIn("cross_exchange_market_making", {item["id"] for item in catalog.json()})
+            self.assertIn("spot_perp_arbitrage", {item["id"] for item in catalog.json()})
 
             data_sources = client.get("/api/data-sources/catalog")
             self.assertEqual(data_sources.status_code, 200)
@@ -402,6 +405,76 @@ class WebTests(unittest.TestCase):
             self.assertEqual(synced_rules.json()["saved_count"], 1)
             self.assertEqual(synced_rules.json()["rules"][0]["symbol"], "MOCKUSDT")
 
+            pmm_plan = client.post(
+                "/api/strategy-tools/pmm/quote-plan",
+                json={
+                    "symbol": "RULEUSDT",
+                    "exchange": "paper",
+                    "market_type": "spot",
+                    "mid_price": 100.0,
+                    "base_balance": 5.0,
+                    "quote_balance": 10_000.0,
+                    "order_notional": 150.0,
+                    "bid_spread_bps": 10.0,
+                    "ask_spread_bps": 10.0,
+                    "minimum_spread_bps": 2.0,
+                    "order_levels": 2,
+                    "order_level_spread_bps": 5.0,
+                    "inventory_target_base_pct": 50.0,
+                    "order_refresh_time": 45.0,
+                },
+            )
+            self.assertEqual(pmm_plan.status_code, 200)
+            self.assertEqual(pmm_plan.json()["strategy"], "pure_market_making")
+            self.assertEqual(pmm_plan.json()["symbol_rule"]["symbol"], "RULEUSDT")
+            self.assertTrue(any(order["status"] == "ready" for order in pmm_plan.json()["orders"]))
+            first_quote_ticks = pmm_plan.json()["orders"][0]["price"] / 0.05
+            self.assertAlmostEqual(first_quote_ticks, round(first_quote_ticks), places=6)
+
+            xemm_opportunity = client.post(
+                "/api/strategy-tools/xemm/opportunity",
+                json={
+                    "symbol": "ETHUSDT",
+                    "maker_exchange": "okx",
+                    "taker_exchange": "binance",
+                    "maker_bid": 99.0,
+                    "maker_ask": 101.0,
+                    "taker_bid": 100.0,
+                    "taker_ask": 100.5,
+                    "order_amount": 2.0,
+                    "min_profitability_bps": 5.0,
+                    "maker_fee_bps": 1.0,
+                    "taker_fee_bps": 2.0,
+                    "slippage_buffer_bps": 1.0,
+                },
+            )
+            self.assertEqual(xemm_opportunity.status_code, 200)
+            self.assertTrue(xemm_opportunity.json()["approved"])
+            self.assertIn("maker_buy_taker_sell", {item["side"] for item in xemm_opportunity.json()["opportunities"]})
+
+            funding_opportunity = client.post(
+                "/api/strategy-tools/funding-arbitrage",
+                json={
+                    "symbol": "ETHUSDT",
+                    "spot_exchange": "binance",
+                    "perp_exchange": "bybit",
+                    "spot_price": 100.0,
+                    "perp_price": 101.0,
+                    "notional": 1_000.0,
+                    "funding_bps_per_8h": 5.0,
+                    "holding_hours": 24.0,
+                    "spot_fee_bps": 1.0,
+                    "perp_fee_bps": 1.0,
+                    "slippage_bps": 1.0,
+                    "borrow_bps_per_day": 0.0,
+                    "leverage": 3.0,
+                    "min_net_edge_bps": 10.0,
+                },
+            )
+            self.assertEqual(funding_opportunity.status_code, 200)
+            self.assertTrue(funding_opportunity.json()["approved"])
+            self.assertEqual(len(funding_opportunity.json()["legs"]), 2)
+
             rule_quantity_preflight = client.post(
                 "/api/trading/preflight",
                 json={
@@ -612,6 +685,9 @@ class WebTests(unittest.TestCase):
             self.assertIn("risk.update", audit_actions)
             self.assertIn("trading.preflight", audit_actions)
             self.assertIn("trading.paper_order", audit_actions)
+            self.assertIn("strategy_tool.pmm_quote_plan", audit_actions)
+            self.assertIn("strategy_tool.xemm_opportunity", audit_actions)
+            self.assertIn("strategy_tool.funding_arbitrage", audit_actions)
             sync_run = client.post("/api/exchange-sync/run", json={"exchange": "paper", "run_mode": "paper"})
             self.assertEqual(sync_run.status_code, 200)
             self.assertEqual(sync_run.json()["status"], "matched")

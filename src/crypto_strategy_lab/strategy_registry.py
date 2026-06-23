@@ -8,6 +8,8 @@ from .strategy import (
     BollingerRsiStrategy,
     ChannelBreakoutConfig,
     ChannelBreakoutStrategy,
+    CrossExchangeMarketMakingConfig,
+    CrossExchangeMarketMakingStrategy,
     EventScoreConfig,
     EventScoreStrategy,
     FixedWeightConfig,
@@ -169,6 +171,45 @@ STRATEGY_DEFINITIONS: dict[str, StrategyDefinition] = {
             StrategyParameter("inventory_target_weight", "库存目标权重", "float", 0.10, 0.0, 1.0, 0.01),
         ],
     ),
+    "pure_market_making": StrategyDefinition(
+        id="pure_market_making",
+        name="PMM 纯做市模板",
+        description="参考 Hummingbot PMM：围绕中间价按 bid/ask spread 报价，并通过库存目标控制参与仓位。",
+        market_types=["spot"],
+        public_basis="公开做市模板：Pure Market Making，真实限价挂单由策略工具生成报价计划。",
+        parameters=[
+            StrategyParameter("lookback", "波动窗口", "int", 20, 2, 300, 1),
+            StrategyParameter("min_spread_bps", "最小价差 bps", "float", 8.0, 0.0, 1000.0, 0.5),
+            StrategyParameter("max_volatility_bps", "最大波动 bps", "float", 120.0, 0.0, 5000.0, 5.0),
+            StrategyParameter("inventory_target_weight", "库存目标权重", "float", 0.10, 0.0, 1.0, 0.01),
+        ],
+    ),
+    "cross_exchange_market_making": StrategyDefinition(
+        id="cross_exchange_market_making",
+        name="跨交易所做市 XEMM",
+        description="maker 交易所挂单，taker 交易所对冲；回测中用事件 score 表示扣费后净利润 bps。",
+        market_types=["spot"],
+        public_basis="公开模板：Cross-Exchange Market Making / liquidity mirroring。",
+        parameters=[
+            StrategyParameter("entry_profit_bps", "入场净利润 bps", "float", 10.0, -100.0, 1000.0, 0.5),
+            StrategyParameter("exit_profit_bps", "退出净利润 bps", "float", 2.0, -100.0, 1000.0, 0.5),
+            StrategyParameter("target_weight", "目标仓位", "float", 0.15, 0.0, 1.0, 0.01),
+            StrategyParameter("event_ttl_bars", "机会有效 Bar 数", "int", 3, 1, 100, 1),
+        ],
+    ),
+    "spot_perp_arbitrage": StrategyDefinition(
+        id="spot_perp_arbitrage",
+        name="期现资金费套利",
+        description="现货多头 + 永续空头的资金费/基差套利研究模板；回测用资金费事件触发。",
+        market_types=["perpetual-long-only"],
+        public_basis="公开套利模板：spot-perpetual arbitrage / funding-rate carry。",
+        parameters=[
+            StrategyParameter("entry_funding_bps", "入场资金费 bps", "float", 1.0, -100.0, 100.0, 0.1),
+            StrategyParameter("exit_funding_bps", "退出资金费 bps", "float", 0.2, -100.0, 100.0, 0.1),
+            StrategyParameter("target_weight", "目标仓位", "float", 0.20, 0.0, 1.0, 0.01),
+            StrategyParameter("event_ttl_bars", "事件有效 Bar 数", "int", 3, 1, 100, 1),
+        ],
+    ),
 }
 
 
@@ -218,8 +259,12 @@ def create_strategy(strategy_type: str, parameters: dict[str, Any] | None = None
         return FixedWeightStrategy(FixedWeightConfig(**params))
     if strategy_type == "funding_rate_carry":
         return FundingRateCarryStrategy(FundingRateCarryConfig(**params))
-    if strategy_type == "market_making":
+    if strategy_type in {"market_making", "pure_market_making"}:
         return MarketMakingStrategy(MarketMakingConfig(**params))
+    if strategy_type == "cross_exchange_market_making":
+        return CrossExchangeMarketMakingStrategy(CrossExchangeMarketMakingConfig(**params))
+    if strategy_type == "spot_perp_arbitrage":
+        return FundingRateCarryStrategy(FundingRateCarryConfig(**params))
     raise ValueError(f"unknown strategy type: {strategy_type}")
 
 
@@ -246,5 +291,7 @@ def _validate_cross_parameter_rules(strategy_type: str, params: dict[str, Any]) 
         raise ValueError("exit_window must be <= breakout_window")
     if strategy_type in {"rsi_mean_reversion", "bollinger_rsi"} and params["oversold_rsi"] >= params["exit_rsi"]:
         raise ValueError("oversold_rsi must be < exit_rsi")
-    if strategy_type == "funding_rate_carry" and params["exit_funding_bps"] >= params["entry_funding_bps"]:
+    if strategy_type in {"funding_rate_carry", "spot_perp_arbitrage"} and params["exit_funding_bps"] >= params["entry_funding_bps"]:
         raise ValueError("exit_funding_bps must be < entry_funding_bps")
+    if strategy_type == "cross_exchange_market_making" and params["exit_profit_bps"] >= params["entry_profit_bps"]:
+        raise ValueError("exit_profit_bps must be < entry_profit_bps")

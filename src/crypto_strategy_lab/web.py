@@ -54,6 +54,7 @@ from .risk import RiskConfig, RiskManager
 from .security import SecretBox, verify_password
 from .store import Database, utc_now
 from .strategy_registry import create_strategy, list_strategy_definitions, validate_parameters
+from .strategy_tools import build_pmm_quote_plan, calculate_spot_perp_arbitrage, calculate_xemm_opportunity
 
 SESSION_COOKIE = "crypto_lab_session"
 DEFAULT_DB_PATH = Path("data/crypto_lab.sqlite3")
@@ -263,6 +264,66 @@ class SymbolRuleSyncRequest(BaseModel):
     provider: str = "binance_spot"
     symbol: Optional[str] = None
     limit: int = Field(default=200, ge=1, le=2000)
+
+
+class PmmQuotePlanRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    exchange: str = "paper"
+    market_type: str = "spot"
+    mid_price: float = Field(default=100.0, gt=0)
+    base_balance: float = Field(default=0.0, ge=0)
+    quote_balance: float = Field(default=10_000.0, ge=0)
+    order_amount: float = Field(default=0.0, ge=0)
+    order_notional: float = Field(default=100.0, ge=0)
+    bid_spread_bps: float = Field(default=10.0, ge=0)
+    ask_spread_bps: float = Field(default=10.0, ge=0)
+    minimum_spread_bps: float = Field(default=1.0, ge=0)
+    order_levels: int = Field(default=1, ge=1, le=20)
+    order_level_spread_bps: float = Field(default=0.0, ge=0)
+    order_level_amount: float = Field(default=0.0, ge=0)
+    inventory_skew_enabled: bool = True
+    inventory_target_base_pct: float = Field(default=50.0, ge=0, le=100)
+    inventory_range_multiplier: float = Field(default=50.0, ge=1)
+    price_floor: float = Field(default=0.0, ge=0)
+    price_ceiling: float = Field(default=0.0, ge=0)
+    order_refresh_time: float = Field(default=60.0, ge=1)
+    filled_order_delay: float = Field(default=60.0, ge=0)
+
+
+class XemmOpportunityRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    maker_exchange: str = "binance"
+    taker_exchange: str = "okx"
+    maker_bid: float = Field(default=99.9, gt=0)
+    maker_ask: float = Field(default=100.1, gt=0)
+    taker_bid: float = Field(default=100.2, gt=0)
+    taker_ask: float = Field(default=100.4, gt=0)
+    order_amount: float = Field(default=1.0, ge=0)
+    min_profitability_bps: float = 10.0
+    maker_fee_bps: float = Field(default=2.0, ge=0)
+    taker_fee_bps: float = Field(default=5.0, ge=0)
+    slippage_buffer_bps: float = Field(default=5.0, ge=0)
+    top_depth_tolerance: float = Field(default=0.0, ge=0)
+
+
+class FundingArbitrageRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    spot_exchange: str = "binance"
+    perp_exchange: str = "binance_usdm"
+    spot_price: float = Field(default=100.0, gt=0)
+    perp_price: float = Field(default=100.2, gt=0)
+    notional: float = Field(default=1_000.0, ge=0)
+    funding_bps_per_8h: float = 1.0
+    holding_hours: float = Field(default=24.0, ge=0)
+    funding_interval_hours: float = Field(default=8.0, gt=0)
+    spot_fee_bps: float = Field(default=5.0, ge=0)
+    perp_fee_bps: float = Field(default=5.0, ge=0)
+    slippage_bps: float = Field(default=5.0, ge=0)
+    borrow_bps_per_day: float = Field(default=0.0, ge=0)
+    leverage: float = Field(default=3.0, ge=1, le=125)
+    maintenance_margin_ratio: float = Field(default=0.005, ge=0, le=1)
+    min_net_edge_bps: float = 5.0
+    include_basis_edge: bool = True
 
 
 class RealtimeSignalRequest(BaseModel):
@@ -1141,6 +1202,93 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
             **_audit_context(request),
         )
         return rule
+
+    @app.post("/api/strategy-tools/pmm/quote-plan")
+    def pmm_quote_plan(
+        payload: PmmQuotePlanRequest,
+        request: Request,
+        user: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> dict:
+        symbol_rule = db.get_symbol_rule(
+            payload.symbol,
+            exchange=payload.exchange,
+            market_type=payload.market_type,
+        )
+        quote_payload = _model_dump(payload)
+        quote_payload.pop("exchange", None)
+        quote_payload.pop("market_type", None)
+        try:
+            plan = build_pmm_quote_plan(
+                **quote_payload,
+                price_tick=float(symbol_rule["price_tick"]) if symbol_rule else 0.0,
+                quantity_step=float(symbol_rule["quantity_step"]) if symbol_rule else 0.0,
+                min_notional=float(symbol_rule["min_notional"]) if symbol_rule else 0.0,
+                max_notional=float(symbol_rule["max_notional"]) if symbol_rule else 0.0,
+                allow_short=payload.market_type.startswith("perpetual"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        plan["symbol_rule"] = symbol_rule
+        db.create_audit_log(
+            user_id=user["id"],
+            action="strategy_tool.pmm_quote_plan",
+            entity_type="strategy_tool",
+            status="ok",
+            detail={"symbol": plan["symbol"], "ready_orders": sum(1 for order in plan["orders"] if order["status"] == "ready")},
+            **_audit_context(request),
+        )
+        return plan
+
+    @app.post("/api/strategy-tools/xemm/opportunity")
+    def xemm_opportunity(
+        payload: XemmOpportunityRequest,
+        request: Request,
+        user: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> dict:
+        try:
+            result = calculate_xemm_opportunity(**_model_dump(payload))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        db.create_audit_log(
+            user_id=user["id"],
+            action="strategy_tool.xemm_opportunity",
+            entity_type="strategy_tool",
+            status="approved" if result["approved"] else "rejected",
+            detail={
+                "symbol": result["symbol"],
+                "maker_exchange": result["maker_exchange"],
+                "taker_exchange": result["taker_exchange"],
+                "approved": result["approved"],
+            },
+            **_audit_context(request),
+        )
+        return result
+
+    @app.post("/api/strategy-tools/funding-arbitrage")
+    def funding_arbitrage(
+        payload: FundingArbitrageRequest,
+        request: Request,
+        user: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> dict:
+        try:
+            result = calculate_spot_perp_arbitrage(**_model_dump(payload))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        db.create_audit_log(
+            user_id=user["id"],
+            action="strategy_tool.funding_arbitrage",
+            entity_type="strategy_tool",
+            status="approved" if result["approved"] else "rejected",
+            detail={
+                "symbol": result["symbol"],
+                "spot_exchange": result["spot_exchange"],
+                "perp_exchange": result["perp_exchange"],
+                "net_edge_bps": result["net_edge_bps"],
+                "approved": result["approved"],
+            },
+            **_audit_context(request),
+        )
+        return result
 
     @app.get("/api/automation/status")
     def automation_status(

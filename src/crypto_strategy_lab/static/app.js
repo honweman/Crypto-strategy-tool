@@ -324,6 +324,11 @@ function renderShell() {
     hasPermission(PERMISSIONS.MANAGE_STRATEGIES) ||
     hasPermission(PERMISSIONS.MANAGE_ALL_STRATEGIES)
   );
+  document.getElementById("strategy-tool-section").hidden = !(
+    hasPermission(PERMISSIONS.RUN_BACKTESTS) ||
+    hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
+    hasPermission(PERMISSIONS.MANAGE_SYSTEM)
+  );
   document.getElementById("save-strategy-config").disabled = !hasPermission(PERMISSIONS.MANAGE_STRATEGIES);
   document.getElementById("save-watchlist").disabled = !hasPermission(PERMISSIONS.MANAGE_STRATEGIES);
   document.getElementById("backtest-section").hidden = !(
@@ -1259,6 +1264,179 @@ function editSymbolRule(id) {
   document.getElementById("symbol-rule-source").value = rule.source || "manual";
   document.getElementById("symbol-rule-active").checked = rule.is_active;
   setResult("symbol-rule-result", `正在编辑 ${rule.symbol}。`, "warning");
+}
+
+async function buildPmmPlan() {
+  setResult("pmm-plan-result", "正在生成 PMM 报价...");
+  try {
+    const data = await api("/api/strategy-tools/pmm/quote-plan", {
+      method: "POST",
+      body: JSON.stringify({
+        symbol: document.getElementById("pmm-symbol").value,
+        exchange: document.getElementById("pmm-exchange").value,
+        market_type: document.getElementById("pmm-market-type").value,
+        mid_price: inputNumber("pmm-mid-price", 100),
+        base_balance: inputNumber("pmm-base-balance", 0),
+        quote_balance: inputNumber("pmm-quote-balance", 10000),
+        order_notional: inputNumber("pmm-order-notional", 100),
+        bid_spread_bps: inputNumber("pmm-bid-spread", 10),
+        ask_spread_bps: inputNumber("pmm-ask-spread", 10),
+        minimum_spread_bps: inputNumber("pmm-minimum-spread", 1),
+        order_levels: inputNumber("pmm-order-levels", 1),
+        order_level_spread_bps: inputNumber("pmm-order-level-spread", 0),
+        inventory_target_base_pct: inputNumber("pmm-inventory-target", 50),
+        order_refresh_time: inputNumber("pmm-refresh-time", 60),
+      }),
+    });
+    renderPmmPlan(data);
+  } catch (error) {
+    setResult("pmm-plan-result", error.message, "danger");
+  }
+}
+
+function renderPmmPlan(data) {
+  const rows = (data.orders || [])
+    .map(
+      (order) => `
+        <tr>
+          <td>${order.level}</td>
+          <td><span class="chip ${order.side === "buy" ? "success" : "danger"}">${escapeHtml(order.side)}</span></td>
+          <td>${Number(order.price).toFixed(8)}</td>
+          <td>${Number(order.quantity).toFixed(8)}</td>
+          <td>${formatMoney(order.notional)}</td>
+          <td><span class="chip ${order.status === "ready" ? "success" : "warning"}">${escapeHtml(order.status)}</span></td>
+          <td>${escapeHtml(order.reason || "")}</td>
+        </tr>`
+    )
+    .join("");
+  document.getElementById("pmm-plan-result").classList.remove("danger");
+  document.getElementById("pmm-plan-result").innerHTML = `
+    <div class="metric-grid">
+      <div class="metric"><span class="label">库存 Base %</span><strong>${Number(data.current_base_pct || 0).toFixed(2)}%</strong></div>
+      <div class="metric"><span class="label">目标 Base %</span><strong>${Number(data.target_base_pct || 0).toFixed(2)}%</strong></div>
+      <div class="metric"><span class="label">Bid/Ask spread</span><strong>${Number(data.bid_spread_bps_effective || 0).toFixed(2)} / ${Number(data.ask_spread_bps_effective || 0).toFixed(2)}</strong></div>
+      <div class="metric"><span class="label">刷新秒数</span><strong>${formatNumber(data.order_refresh_time || 0)}</strong></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>层</th><th>方向</th><th>价格</th><th>数量</th><th>名义额</th><th>状态</th><th>原因</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="7">暂无报价</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function scanXemm() {
+  setResult("xemm-result", "正在计算跨交易所价差...");
+  try {
+    const data = await api("/api/strategy-tools/xemm/opportunity", {
+      method: "POST",
+      body: JSON.stringify({
+        symbol: document.getElementById("xemm-symbol").value,
+        maker_exchange: document.getElementById("xemm-maker-exchange").value,
+        taker_exchange: document.getElementById("xemm-taker-exchange").value,
+        maker_bid: inputNumber("xemm-maker-bid", 99.9),
+        maker_ask: inputNumber("xemm-maker-ask", 100.1),
+        taker_bid: inputNumber("xemm-taker-bid", 100.2),
+        taker_ask: inputNumber("xemm-taker-ask", 100.4),
+        order_amount: inputNumber("xemm-order-amount", 1),
+        min_profitability_bps: inputNumber("xemm-min-profitability", 10),
+        maker_fee_bps: inputNumber("xemm-maker-fee", 2),
+        taker_fee_bps: inputNumber("xemm-taker-fee", 5),
+        slippage_buffer_bps: inputNumber("xemm-slippage-buffer", 5),
+      }),
+    });
+    renderXemmResult(data);
+  } catch (error) {
+    setResult("xemm-result", error.message, "danger");
+  }
+}
+
+function renderXemmResult(data) {
+  const rows = (data.opportunities || [])
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(item.side)}</td>
+          <td>${escapeHtml(item.maker_order_side)}</td>
+          <td>${Number(item.maker_price).toFixed(8)}</td>
+          <td>${Number(item.hedge_price).toFixed(8)}</td>
+          <td>${Number(item.gross_spread_bps || 0).toFixed(2)}</td>
+          <td>${Number(item.net_profit_bps || 0).toFixed(2)}</td>
+          <td><span class="chip ${item.profitable ? "success" : "warning"}">${item.profitable ? "通过" : "不足"}</span></td>
+        </tr>`
+    )
+    .join("");
+  document.getElementById("xemm-result").classList.remove("danger");
+  document.getElementById("xemm-result").innerHTML = `
+    <div class="result-meta">成本 ${Number(data.cost_bps || 0).toFixed(2)} bps，最低净利润 ${Number(data.min_profitability_bps || 0).toFixed(2)} bps。</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>机会</th><th>Maker 方向</th><th>Maker 价</th><th>对冲价</th><th>毛价差 bps</th><th>净利润 bps</th><th>状态</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="7">暂无机会</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function scanFundingArbitrage() {
+  setResult("funding-arbitrage-result", "正在估算资金费套利...");
+  try {
+    const data = await api("/api/strategy-tools/funding-arbitrage", {
+      method: "POST",
+      body: JSON.stringify({
+        symbol: document.getElementById("funding-symbol").value,
+        spot_exchange: document.getElementById("funding-spot-exchange").value,
+        perp_exchange: document.getElementById("funding-perp-exchange").value,
+        spot_price: inputNumber("funding-spot-price", 100),
+        perp_price: inputNumber("funding-perp-price", 100.2),
+        notional: inputNumber("funding-notional", 1000),
+        funding_bps_per_8h: inputNumber("funding-bps-8h", 1),
+        holding_hours: inputNumber("funding-holding-hours", 24),
+        spot_fee_bps: inputNumber("funding-spot-fee", 5),
+        perp_fee_bps: inputNumber("funding-perp-fee", 5),
+        slippage_bps: inputNumber("funding-slippage", 5),
+        borrow_bps_per_day: inputNumber("funding-borrow", 0),
+        leverage: inputNumber("funding-leverage", 3),
+        min_net_edge_bps: inputNumber("funding-min-edge", 5),
+      }),
+    });
+    renderFundingArbitrage(data);
+  } catch (error) {
+    setResult("funding-arbitrage-result", error.message, "danger");
+  }
+}
+
+function renderFundingArbitrage(data) {
+  const legRows = (data.legs || [])
+    .map(
+      (leg) => `
+        <tr>
+          <td>${escapeHtml(leg.venue)}</td>
+          <td>${escapeHtml(leg.exchange)}</td>
+          <td>${escapeHtml(leg.side)}</td>
+          <td>${Number(leg.quantity).toFixed(8)}</td>
+          <td>${Number(leg.price).toFixed(8)}</td>
+        </tr>`
+    )
+    .join("");
+  document.getElementById("funding-arbitrage-result").classList.remove("danger");
+  document.getElementById("funding-arbitrage-result").innerHTML = `
+    <div class="metric-grid">
+      <div class="metric"><span class="label">净收益 bps</span><strong>${Number(data.net_edge_bps || 0).toFixed(2)}</strong></div>
+      <div class="metric"><span class="label">净收益额</span><strong>${formatMoney(data.net_edge_value || 0)}</strong></div>
+      <div class="metric"><span class="label">基差 bps</span><strong>${Number(data.basis_bps || 0).toFixed(2)}</strong></div>
+      <div class="metric"><span class="label">初始保证金</span><strong>${formatMoney(data.initial_margin_required || 0)}</strong></div>
+      <div class="metric"><span class="label">强平缓冲</span><strong>${formatPercent(data.liquidation_buffer_pct || 0)}</strong></div>
+      <div class="metric"><span class="label">状态</span><strong>${data.approved ? "通过" : escapeHtml(data.reason || "不足")}</strong></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>腿</th><th>交易所</th><th>方向</th><th>数量</th><th>价格</th></tr></thead>
+        <tbody>${legRows || '<tr><td colspan="5">暂无交易腿</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 async function loadDataSources() {
@@ -2430,6 +2608,9 @@ document.getElementById("change-password-form").addEventListener("submit", chang
 document.getElementById("save-risk-settings").addEventListener("click", () => saveRiskSettings().catch((error) => toast(error.message)));
 document.getElementById("sync-symbol-rules").addEventListener("click", () => syncSymbolRules().catch((error) => toast(error.message)));
 document.getElementById("save-symbol-rule").addEventListener("click", () => saveSymbolRule().catch((error) => toast(error.message)));
+document.getElementById("build-pmm-plan").addEventListener("click", () => buildPmmPlan().catch((error) => toast(error.message)));
+document.getElementById("scan-xemm").addEventListener("click", () => scanXemm().catch((error) => toast(error.message)));
+document.getElementById("scan-funding-arbitrage").addEventListener("click", () => scanFundingArbitrage().catch((error) => toast(error.message)));
 document.getElementById("fetch-market-data").addEventListener("click", () => fetchMarketData().catch((error) => toast(error.message)));
 document.getElementById("run-indicator-analysis").addEventListener("click", () => runIndicatorAnalysis().catch((error) => toast(error.message)));
 document.getElementById("save-watchlist").addEventListener("click", () => saveWatchlist().catch((error) => toast(error.message)));

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=17" />
+    <link rel="stylesheet" href="/static/app.css?v=18" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -445,6 +445,78 @@
             <div id="strategy-versions-table" class="table-wrap"></div>
           </section>
 
+          <section id="strategy-tool-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Strategy Tools</p>
+                <h2>做市与套利工具</h2>
+              </div>
+            </div>
+            <div class="subhead">
+              <h3>PMM 报价计划</h3>
+              <button id="build-pmm-plan" type="button">生成 PMM 报价</button>
+            </div>
+            <div class="form-grid compact-form">
+              <label>交易对<input id="pmm-symbol" value="BTCUSDT" /></label>
+              <label>交易所<input id="pmm-exchange" value="paper" /></label>
+              <label>市场<select id="pmm-market-type"><option value="spot">spot</option><option value="perpetual-long-only">perpetual-long-only</option></select></label>
+              <label>中间价<input id="pmm-mid-price" type="number" value="100" min="0" step="0.0001" /></label>
+              <label>Base 库存<input id="pmm-base-balance" type="number" value="0" min="0" step="0.0001" /></label>
+              <label>Quote 库存<input id="pmm-quote-balance" type="number" value="10000" min="0" step="1" /></label>
+              <label>每单名义额<input id="pmm-order-notional" type="number" value="100" min="0" step="1" /></label>
+              <label>Bid spread bps<input id="pmm-bid-spread" type="number" value="10" min="0" step="0.1" /></label>
+              <label>Ask spread bps<input id="pmm-ask-spread" type="number" value="10" min="0" step="0.1" /></label>
+              <label>最低价差 bps<input id="pmm-minimum-spread" type="number" value="1" min="0" step="0.1" /></label>
+              <label>挂单层数<input id="pmm-order-levels" type="number" value="1" min="1" max="20" step="1" /></label>
+              <label>层间价差 bps<input id="pmm-order-level-spread" type="number" value="5" min="0" step="0.1" /></label>
+              <label>目标 Base %<input id="pmm-inventory-target" type="number" value="50" min="0" max="100" step="1" /></label>
+              <label>刷新秒数<input id="pmm-refresh-time" type="number" value="60" min="1" step="1" /></label>
+            </div>
+            <div id="pmm-plan-result" class="result-box compact-result"></div>
+
+            <div class="subhead">
+              <h3>跨交易所价差</h3>
+              <button id="scan-xemm" type="button">扫描 XEMM 机会</button>
+            </div>
+            <div class="form-grid compact-form">
+              <label>交易对<input id="xemm-symbol" value="BTCUSDT" /></label>
+              <label>Maker<input id="xemm-maker-exchange" value="binance" /></label>
+              <label>Taker<input id="xemm-taker-exchange" value="okx" /></label>
+              <label>Maker bid<input id="xemm-maker-bid" type="number" value="99.9" min="0" step="0.0001" /></label>
+              <label>Maker ask<input id="xemm-maker-ask" type="number" value="100.1" min="0" step="0.0001" /></label>
+              <label>Taker bid<input id="xemm-taker-bid" type="number" value="100.2" min="0" step="0.0001" /></label>
+              <label>Taker ask<input id="xemm-taker-ask" type="number" value="100.4" min="0" step="0.0001" /></label>
+              <label>数量<input id="xemm-order-amount" type="number" value="1" min="0" step="0.0001" /></label>
+              <label>最低净利润 bps<input id="xemm-min-profitability" type="number" value="10" step="0.1" /></label>
+              <label>Maker fee bps<input id="xemm-maker-fee" type="number" value="2" min="0" step="0.1" /></label>
+              <label>Taker fee bps<input id="xemm-taker-fee" type="number" value="5" min="0" step="0.1" /></label>
+              <label>滑点缓冲 bps<input id="xemm-slippage-buffer" type="number" value="5" min="0" step="0.1" /></label>
+            </div>
+            <div id="xemm-result" class="result-box compact-result"></div>
+
+            <div class="subhead">
+              <h3>期现资金费套利</h3>
+              <button id="scan-funding-arbitrage" type="button">估算资金费套利</button>
+            </div>
+            <div class="form-grid compact-form">
+              <label>交易对<input id="funding-symbol" value="BTCUSDT" /></label>
+              <label>现货交易所<input id="funding-spot-exchange" value="binance" /></label>
+              <label>合约交易所<input id="funding-perp-exchange" value="binance_usdm" /></label>
+              <label>现货价<input id="funding-spot-price" type="number" value="100" min="0" step="0.0001" /></label>
+              <label>合约价<input id="funding-perp-price" type="number" value="100.2" min="0" step="0.0001" /></label>
+              <label>名义额<input id="funding-notional" type="number" value="1000" min="0" step="10" /></label>
+              <label>资金费 bps/8h<input id="funding-bps-8h" type="number" value="1" step="0.1" /></label>
+              <label>持有小时<input id="funding-holding-hours" type="number" value="24" min="0" step="1" /></label>
+              <label>现货费 bps<input id="funding-spot-fee" type="number" value="5" min="0" step="0.1" /></label>
+              <label>合约费 bps<input id="funding-perp-fee" type="number" value="5" min="0" step="0.1" /></label>
+              <label>滑点 bps<input id="funding-slippage" type="number" value="5" min="0" step="0.1" /></label>
+              <label>借贷 bps/日<input id="funding-borrow" type="number" value="0" min="0" step="0.1" /></label>
+              <label>杠杆<input id="funding-leverage" type="number" value="3" min="1" max="125" step="0.1" /></label>
+              <label>最低净收益 bps<input id="funding-min-edge" type="number" value="5" step="0.1" /></label>
+            </div>
+            <div id="funding-arbitrage-result" class="result-box compact-result"></div>
+          </section>
+
           <section id="backtest-section" class="panel">
             <div class="section-head">
               <div>
@@ -563,6 +635,6 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=17"></script>
+    <script src="/static/app.js?v=18"></script>
   </body>
 </html>

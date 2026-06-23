@@ -546,6 +546,74 @@ class MarketMakingStrategy(Strategy):
         ]
 
 
+@dataclass(frozen=True)
+class CrossExchangeMarketMakingConfig:
+    entry_profit_bps: float = 10.0
+    exit_profit_bps: float = 2.0
+    target_weight: float = 0.15
+    event_ttl_bars: int = 3
+
+
+class CrossExchangeMarketMakingStrategy(Strategy):
+    """Research proxy for XEMM, driven by external net-profit-bps events."""
+
+    def __init__(self, config: CrossExchangeMarketMakingConfig | None = None) -> None:
+        self.config = config or CrossExchangeMarketMakingConfig()
+        self.active_targets: dict[str, tuple[float, int, float]] = {}
+        self.current_targets: dict[str, float] = defaultdict(float)
+
+    def on_external_event(self, event: ExternalEvent) -> list[TargetSignal]:
+        net_profit_bps = float(event.score)
+        if net_profit_bps >= self.config.entry_profit_bps:
+            target = clamp(self.config.target_weight, 0.0, 1.0)
+            self.active_targets[event.symbol] = (target, self.config.event_ttl_bars, net_profit_bps)
+            self.current_targets[event.symbol] = target
+            return [
+                TargetSignal(
+                    timestamp=event.timestamp,
+                    symbol=event.symbol,
+                    target_weight=target,
+                    confidence=min(1.0, net_profit_bps / max(self.config.entry_profit_bps, 1e-9)),
+                    reason=f"xemm_entry:net_profit_bps={net_profit_bps:.4f}",
+                )
+            ]
+        if net_profit_bps <= self.config.exit_profit_bps and self.current_targets[event.symbol] > 0:
+            self.active_targets.pop(event.symbol, None)
+            self.current_targets[event.symbol] = 0.0
+            return [
+                TargetSignal(
+                    timestamp=event.timestamp,
+                    symbol=event.symbol,
+                    target_weight=0.0,
+                    confidence=1.0,
+                    reason=f"xemm_exit:net_profit_bps={net_profit_bps:.4f}",
+                )
+            ]
+        return []
+
+    def on_bar(self, bar: Bar) -> list[TargetSignal]:
+        if bar.symbol not in self.active_targets:
+            return []
+        target, ttl, net_profit_bps = self.active_targets[bar.symbol]
+        ttl -= 1
+        if ttl > 0:
+            self.active_targets[bar.symbol] = (target, ttl, net_profit_bps)
+            return []
+        self.active_targets.pop(bar.symbol, None)
+        if self.current_targets[bar.symbol] <= 0:
+            return []
+        self.current_targets[bar.symbol] = 0.0
+        return [
+            TargetSignal(
+                timestamp=bar.timestamp,
+                symbol=bar.symbol,
+                target_weight=0.0,
+                confidence=1.0,
+                reason=f"xemm_ttl_expired:net_profit_bps={net_profit_bps:.4f}",
+            )
+        ]
+
+
 def _rsi(prices: deque[float]) -> float | None:
     if len(prices) < 2:
         return None

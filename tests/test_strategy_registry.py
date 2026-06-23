@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from crypto_strategy_lab.strategy import (
     BollingerRsiStrategy,
     ChannelBreakoutStrategy,
+    CrossExchangeMarketMakingStrategy,
     EventScoreStrategy,
     FixedWeightStrategy,
     FundingRateCarryStrategy,
@@ -30,6 +31,9 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertIn("bollinger_rsi", ids)
         self.assertIn("funding_rate_carry", ids)
         self.assertIn("market_making", ids)
+        self.assertIn("pure_market_making", ids)
+        self.assertIn("cross_exchange_market_making", ids)
+        self.assertIn("spot_perp_arbitrage", ids)
 
     def test_strategy_factory(self) -> None:
         self.assertIsInstance(create_strategy("statistical_event", {"lookback": 5}), StatisticalEventStrategy)
@@ -41,6 +45,9 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertIsInstance(create_strategy("bollinger_rsi", {"lookback": 6, "rsi_window": 5}), BollingerRsiStrategy)
         self.assertIsInstance(create_strategy("funding_rate_carry", {"entry_funding_bps": 1.0}), FundingRateCarryStrategy)
         self.assertIsInstance(create_strategy("market_making", {"lookback": 5}), MarketMakingStrategy)
+        self.assertIsInstance(create_strategy("pure_market_making", {"lookback": 5}), MarketMakingStrategy)
+        self.assertIsInstance(create_strategy("cross_exchange_market_making", {"entry_profit_bps": 5}), CrossExchangeMarketMakingStrategy)
+        self.assertIsInstance(create_strategy("spot_perp_arbitrage", {"entry_funding_bps": 1.0}), FundingRateCarryStrategy)
 
     def test_parameter_validation(self) -> None:
         params = validate_parameters("fixed_weight", {"target_weight": "0.25"})
@@ -53,6 +60,8 @@ class StrategyRegistryTests(unittest.TestCase):
             validate_parameters("rsi_mean_reversion", {"oversold_rsi": 60, "exit_rsi": 50})
         with self.assertRaises(ValueError):
             validate_parameters("funding_rate_carry", {"entry_funding_bps": 1, "exit_funding_bps": 1})
+        with self.assertRaises(ValueError):
+            validate_parameters("cross_exchange_market_making", {"entry_profit_bps": 1, "exit_profit_bps": 1})
 
 
 if __name__ == "__main__":
