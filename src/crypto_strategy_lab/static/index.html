@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=18" />
+    <link rel="stylesheet" href="/static/app.css?v=19" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -454,10 +454,14 @@
             </div>
             <div class="subhead">
               <h3>PMM 报价计划</h3>
-              <button id="build-pmm-plan" type="button">生成 PMM 报价</button>
+              <div class="button-row">
+                <button id="load-pmm-quote" class="secondary" type="button">拉取中间价</button>
+                <button id="build-pmm-plan" type="button">生成 PMM 报价</button>
+              </div>
             </div>
             <div class="form-grid compact-form">
               <label>交易对<input id="pmm-symbol" value="BTCUSDT" /></label>
+              <label>行情源<input id="pmm-provider" value="binance_spot" /></label>
               <label>交易所<input id="pmm-exchange" value="paper" /></label>
               <label>市场<select id="pmm-market-type"><option value="spot">spot</option><option value="perpetual-long-only">perpetual-long-only</option></select></label>
               <label>中间价<input id="pmm-mid-price" type="number" value="100" min="0" step="0.0001" /></label>
@@ -476,10 +480,15 @@
 
             <div class="subhead">
               <h3>跨交易所价差</h3>
-              <button id="scan-xemm" type="button">扫描 XEMM 机会</button>
+              <div class="button-row">
+                <button id="load-xemm-quotes" class="secondary" type="button">拉取价差</button>
+                <button id="scan-xemm" type="button">扫描 XEMM 机会</button>
+              </div>
             </div>
             <div class="form-grid compact-form">
               <label>交易对<input id="xemm-symbol" value="BTCUSDT" /></label>
+              <label>Maker 行情源<input id="xemm-maker-provider" value="binance_spot" /></label>
+              <label>Taker 行情源<input id="xemm-taker-provider" value="okx_spot" /></label>
               <label>Maker<input id="xemm-maker-exchange" value="binance" /></label>
               <label>Taker<input id="xemm-taker-exchange" value="okx" /></label>
               <label>Maker bid<input id="xemm-maker-bid" type="number" value="99.9" min="0" step="0.0001" /></label>
@@ -496,10 +505,15 @@
 
             <div class="subhead">
               <h3>期现资金费套利</h3>
-              <button id="scan-funding-arbitrage" type="button">估算资金费套利</button>
+              <div class="button-row">
+                <button id="load-funding-quotes" class="secondary" type="button">拉取现货/合约</button>
+                <button id="scan-funding-arbitrage" type="button">估算资金费套利</button>
+              </div>
             </div>
             <div class="form-grid compact-form">
               <label>交易对<input id="funding-symbol" value="BTCUSDT" /></label>
+              <label>现货行情源<input id="funding-spot-provider" value="binance_spot" /></label>
+              <label>合约行情源<input id="funding-perp-provider" value="binance_usdm" /></label>
               <label>现货交易所<input id="funding-spot-exchange" value="binance" /></label>
               <label>合约交易所<input id="funding-perp-exchange" value="binance_usdm" /></label>
               <label>现货价<input id="funding-spot-price" type="number" value="100" min="0" step="0.0001" /></label>
@@ -635,6 +649,6 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=18"></script>
+    <script src="/static/app.js?v=19"></script>
   </body>
 </html>

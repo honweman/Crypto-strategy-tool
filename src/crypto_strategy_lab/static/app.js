@@ -9,6 +9,7 @@ const state = {
   symbolRules: [],
   symbolRuleSources: [],
   dataSources: [],
+  marketQuoteSources: [],
   watchlists: [],
   indicatorCatalog: [],
   auditLogs: [],
@@ -260,6 +261,28 @@ function defaultDataOutputFile(provider, symbol, interval) {
   return `data/${provider}_${safeSymbol || "SYMBOL"}_${safeInterval || "1h"}.csv`;
 }
 
+async function fetchMarketQuote(provider, symbol) {
+  return api(`/api/market-quotes/quote?provider=${encodeURIComponent(provider)}&symbol=${encodeURIComponent(symbol)}`);
+}
+
+function bestQuoteMid(quote) {
+  return Number(quote.mid || quote.last || ((Number(quote.bid || 0) + Number(quote.ask || 0)) / 2) || 0);
+}
+
+function buyReferencePrice(quote) {
+  return Number(quote.ask || quote.last || quote.mid || 0);
+}
+
+function sellReferencePrice(quote) {
+  return Number(quote.bid || quote.last || quote.mid || 0);
+}
+
+function setInputValue(id, value) {
+  const element = document.getElementById(id);
+  if (!element || value === undefined || value === null || value === "") return;
+  element.value = String(value);
+}
+
 function monitoringQuery(limit = null, extra = {}) {
   const params = new URLSearchParams();
   if (hasPermission(PERMISSIONS.VIEW_ALL_TRADES)) params.set("all", "1");
@@ -282,6 +305,7 @@ async function loadSession() {
       loadPaperTrading(),
       loadOrderHistory(),
       loadDataSources(),
+      loadMarketQuoteSources(),
       loadIndicatorCatalog(),
       loadWatchlists(),
       loadStrategyConfigs(),
@@ -1266,6 +1290,78 @@ function editSymbolRule(id) {
   setResult("symbol-rule-result", `正在编辑 ${rule.symbol}。`, "warning");
 }
 
+async function loadPmmQuote() {
+  const symbol = document.getElementById("pmm-symbol").value;
+  const provider = document.getElementById("pmm-provider").value;
+  setResult("pmm-plan-result", "正在拉取公开报价...");
+  try {
+    const quote = await fetchMarketQuote(provider, symbol);
+    const mid = bestQuoteMid(quote);
+    if (mid <= 0) throw new Error("quote_has_no_positive_mid");
+    setInputValue("pmm-symbol", quote.symbol);
+    setInputValue("pmm-exchange", quote.exchange);
+    setInputValue("pmm-market-type", quote.market_type);
+    setInputValue("pmm-mid-price", mid.toFixed(8));
+    setResult(
+      "pmm-plan-result",
+      `${quote.provider} ${quote.symbol}: bid ${formatNumber(quote.bid)} / ask ${formatNumber(quote.ask)} / mid ${formatNumber(mid)}，spread ${Number(quote.spread_bps || 0).toFixed(2)} bps。`,
+      "success"
+    );
+  } catch (error) {
+    setResult("pmm-plan-result", error.message, "danger");
+  }
+}
+
+async function loadXemmQuotes() {
+  const symbol = document.getElementById("xemm-symbol").value;
+  const makerProvider = document.getElementById("xemm-maker-provider").value;
+  const takerProvider = document.getElementById("xemm-taker-provider").value;
+  setResult("xemm-result", "正在拉取 maker/taker 报价...");
+  try {
+    const [makerQuote, takerQuote] = await Promise.all([fetchMarketQuote(makerProvider, symbol), fetchMarketQuote(takerProvider, symbol)]);
+    setInputValue("xemm-maker-exchange", makerQuote.exchange);
+    setInputValue("xemm-taker-exchange", takerQuote.exchange);
+    setInputValue("xemm-maker-bid", Number(makerQuote.bid || makerQuote.last || makerQuote.mid || 0).toFixed(8));
+    setInputValue("xemm-maker-ask", Number(makerQuote.ask || makerQuote.last || makerQuote.mid || 0).toFixed(8));
+    setInputValue("xemm-taker-bid", Number(takerQuote.bid || takerQuote.last || takerQuote.mid || 0).toFixed(8));
+    setInputValue("xemm-taker-ask", Number(takerQuote.ask || takerQuote.last || takerQuote.mid || 0).toFixed(8));
+    setResult(
+      "xemm-result",
+      `${makerQuote.provider} ${makerQuote.symbol} vs ${takerQuote.provider} ${takerQuote.symbol}: maker spread ${Number(makerQuote.spread_bps || 0).toFixed(2)} bps，taker spread ${Number(takerQuote.spread_bps || 0).toFixed(2)} bps。`,
+      "success"
+    );
+  } catch (error) {
+    setResult("xemm-result", error.message, "danger");
+  }
+}
+
+async function loadFundingQuotes() {
+  const symbol = document.getElementById("funding-symbol").value;
+  const spotProvider = document.getElementById("funding-spot-provider").value;
+  const perpProvider = document.getElementById("funding-perp-provider").value;
+  setResult("funding-arbitrage-result", "正在拉取现货/合约报价...");
+  try {
+    const [spotQuote, perpQuote] = await Promise.all([fetchMarketQuote(spotProvider, symbol), fetchMarketQuote(perpProvider, symbol)]);
+    const spotPrice = buyReferencePrice(spotQuote);
+    const perpPrice = sellReferencePrice(perpQuote);
+    if (spotPrice <= 0 || perpPrice <= 0) throw new Error("quote_has_no_positive_trade_price");
+    setInputValue("funding-spot-exchange", spotQuote.exchange);
+    setInputValue("funding-perp-exchange", perpQuote.exchange);
+    setInputValue("funding-spot-price", spotPrice.toFixed(8));
+    setInputValue("funding-perp-price", perpPrice.toFixed(8));
+    if (perpQuote.funding_rate_bps_8h !== null && perpQuote.funding_rate_bps_8h !== undefined) {
+      setInputValue("funding-bps-8h", Number(perpQuote.funding_rate_bps_8h).toFixed(4));
+    }
+    setResult(
+      "funding-arbitrage-result",
+      `${spotQuote.provider} ask ${formatNumber(spotPrice)}，${perpQuote.provider} bid ${formatNumber(perpPrice)}，资金费 ${Number(perpQuote.funding_rate_bps_8h || 0).toFixed(4)} bps/8h。`,
+      "success"
+    );
+  } catch (error) {
+    setResult("funding-arbitrage-result", error.message, "danger");
+  }
+}
+
 async function buildPmmPlan() {
   setResult("pmm-plan-result", "正在生成 PMM 报价...");
   try {
@@ -1443,6 +1539,20 @@ async function loadDataSources() {
   if (!(hasPermission(PERMISSIONS.VIEW_STRATEGIES) || hasPermission(PERMISSIONS.RUN_BACKTESTS))) return;
   state.dataSources = await api("/api/data-sources/catalog");
   renderDataSources();
+}
+
+async function loadMarketQuoteSources() {
+  if (
+    !(
+      hasPermission(PERMISSIONS.VIEW_MONITORING) ||
+      hasPermission(PERMISSIONS.VIEW_STRATEGIES) ||
+      hasPermission(PERMISSIONS.RUN_BACKTESTS) ||
+      hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES)
+    )
+  ) {
+    return;
+  }
+  state.marketQuoteSources = await api("/api/market-quotes/sources");
 }
 
 function selectedDataSource() {
@@ -2608,8 +2718,11 @@ document.getElementById("change-password-form").addEventListener("submit", chang
 document.getElementById("save-risk-settings").addEventListener("click", () => saveRiskSettings().catch((error) => toast(error.message)));
 document.getElementById("sync-symbol-rules").addEventListener("click", () => syncSymbolRules().catch((error) => toast(error.message)));
 document.getElementById("save-symbol-rule").addEventListener("click", () => saveSymbolRule().catch((error) => toast(error.message)));
+document.getElementById("load-pmm-quote").addEventListener("click", () => loadPmmQuote().catch((error) => toast(error.message)));
 document.getElementById("build-pmm-plan").addEventListener("click", () => buildPmmPlan().catch((error) => toast(error.message)));
+document.getElementById("load-xemm-quotes").addEventListener("click", () => loadXemmQuotes().catch((error) => toast(error.message)));
 document.getElementById("scan-xemm").addEventListener("click", () => scanXemm().catch((error) => toast(error.message)));
+document.getElementById("load-funding-quotes").addEventListener("click", () => loadFundingQuotes().catch((error) => toast(error.message)));
 document.getElementById("scan-funding-arbitrage").addEventListener("click", () => scanFundingArbitrage().catch((error) => toast(error.message)));
 document.getElementById("fetch-market-data").addEventListener("click", () => fetchMarketData().catch((error) => toast(error.message)));
 document.getElementById("run-indicator-analysis").addEventListener("click", () => runIndicatorAnalysis().catch((error) => toast(error.message)));

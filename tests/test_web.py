@@ -2,13 +2,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi.testclient import TestClient
 
 from crypto_strategy_lab.exchange_rules import ExchangeSymbolRule
+from crypto_strategy_lab.market_quotes import MarketQuote
 from crypto_strategy_lab.web import create_app
 
 
@@ -84,6 +85,30 @@ class WebTests(unittest.TestCase):
             data_sources = client.get("/api/data-sources/catalog")
             self.assertEqual(data_sources.status_code, 200)
             self.assertIn("binance_spot", {source["id"] for source in data_sources.json()})
+
+            quote_sources = client.get("/api/market-quotes/sources")
+            self.assertEqual(quote_sources.status_code, 200)
+            self.assertIn("binance_spot", {source["id"] for source in quote_sources.json()})
+            with patch(
+                "crypto_strategy_lab.web.fetch_market_quote",
+                new=AsyncMock(
+                    return_value=MarketQuote(
+                        provider="binance_spot",
+                        exchange="binance",
+                        market_type="spot",
+                        symbol="BTCUSDT",
+                        bid=99.0,
+                        ask=101.0,
+                        last=100.0,
+                        mid=100.0,
+                        spread_bps=200.0,
+                    )
+                ),
+            ):
+                quote = client.get("/api/market-quotes/quote?provider=binance_spot&symbol=BTCUSDT")
+            self.assertEqual(quote.status_code, 200)
+            self.assertEqual(quote.json()["mid"], 100.0)
+            self.assertEqual(quote.json()["exchange"], "binance")
 
             indicator_catalog = client.get("/api/analysis/indicator-catalog")
             self.assertEqual(indicator_catalog.status_code, 200)

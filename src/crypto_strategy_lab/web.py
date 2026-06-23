@@ -30,6 +30,7 @@ from .market_data import (
     list_market_data_sources,
     write_bars_csv,
 )
+from .market_quotes import fetch_market_quote, list_market_quote_sources
 from .models import Order, OrderStatus, OrderType, Side, TimeInForce
 from .permissions import (
     ALL_PERMISSIONS,
@@ -512,6 +513,24 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
     @app.get("/api/data-sources/catalog")
     def data_sources(_: dict = Depends(require_any(VIEW_STRATEGIES, RUN_BACKTESTS))) -> list[dict]:
         return list_market_data_sources()
+
+    @app.get("/api/market-quotes/sources")
+    def market_quote_sources(_: dict = Depends(require_any(VIEW_MONITORING, VIEW_STRATEGIES, RUN_BACKTESTS, EXECUTE_PAPER_TRADES))) -> list[dict]:
+        return list_market_quote_sources()
+
+    @app.get("/api/market-quotes/quote")
+    async def market_quote(
+        provider: str = Query("binance_spot"),
+        symbol: str = Query("BTCUSDT"),
+        _: dict = Depends(require_any(VIEW_MONITORING, VIEW_STRATEGIES, RUN_BACKTESTS, EXECUTE_PAPER_TRADES)),
+    ) -> dict:
+        try:
+            quote = await fetch_market_quote(provider, symbol)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"market_quote_request_failed:{exc}") from exc
+        return quote.as_dict()
 
     @app.get("/api/analysis/indicator-catalog")
     def analysis_indicator_catalog(_: dict = Depends(require_any(VIEW_STRATEGIES, RUN_BACKTESTS))) -> list[dict]:
