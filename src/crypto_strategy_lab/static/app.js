@@ -6,6 +6,7 @@ const state = {
   backtestRuns: [],
   tradeOrders: [],
   riskSettings: null,
+  symbolRules: [],
   dataSources: [],
   watchlists: [],
   indicatorCatalog: [],
@@ -95,6 +96,7 @@ function visiblePagesForPermissions(permissions) {
     permissions.has(PERMISSIONS.VIEW_BACKTESTS) ||
     permissions.has(PERMISSIONS.RUN_BACKTESTS) ||
     permissions.has(PERMISSIONS.VIEW_STRATEGIES) ||
+    permissions.has(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
     permissions.has(PERMISSIONS.MANAGE_API_KEYS) ||
     permissions.has(PERMISSIONS.MANAGE_USERS) ||
     permissions.has(PERMISSIONS.MANAGE_SYSTEM)
@@ -117,6 +119,7 @@ function hasConfigPageAccess() {
     hasPermission(PERMISSIONS.VIEW_BACKTESTS) ||
     hasPermission(PERMISSIONS.RUN_BACKTESTS) ||
     hasPermission(PERMISSIONS.VIEW_STRATEGIES) ||
+    hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
     hasPermission(PERMISSIONS.MANAGE_API_KEYS) ||
     hasPermission(PERMISSIONS.MANAGE_ALL_API_KEYS) ||
     hasPermission(PERMISSIONS.MANAGE_ALL_STRATEGIES) ||
@@ -283,6 +286,7 @@ async function loadSession() {
       loadStrategyConfigs(),
       loadBacktestHistory(),
       loadRiskSettings(),
+      loadSymbolRules(),
       loadApiKeys(),
       loadUsers(),
       loadAuditLogs(),
@@ -326,6 +330,11 @@ function renderShell() {
   document.getElementById("risk-section").hidden = !hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES);
   document.getElementById("sync-section").hidden = !(
     hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES) || hasPermission(PERMISSIONS.VIEW_ALL_TRADES)
+  );
+  document.getElementById("symbol-rule-section").hidden = !(
+    hasPermission(PERMISSIONS.RUN_BACKTESTS) ||
+    hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
+    hasPermission(PERMISSIONS.MANAGE_SYSTEM)
   );
   document.getElementById("automation-section").hidden = !(
     hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
@@ -378,6 +387,7 @@ async function login(event) {
       loadStrategyConfigs(),
       loadBacktestHistory(),
       loadRiskSettings(),
+      loadSymbolRules(),
       loadApiKeys(),
       loadUsers(),
       loadAuditLogs(),
@@ -1051,6 +1061,97 @@ async function saveRiskSettings() {
   } catch (error) {
     setResult("risk-settings-result", error.message, "danger");
   }
+}
+
+function canUseSymbolRules() {
+  return (
+    hasPermission(PERMISSIONS.RUN_BACKTESTS) ||
+    hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
+    hasPermission(PERMISSIONS.MANAGE_SYSTEM)
+  );
+}
+
+async function loadSymbolRules() {
+  if (!canUseSymbolRules()) return;
+  state.symbolRules = await api("/api/symbol-rules?limit=200");
+  renderSymbolRules();
+}
+
+async function saveSymbolRule() {
+  if (!canUseSymbolRules()) return;
+  setResult("symbol-rule-result", "正在保存交易对规则...");
+  try {
+    const rule = await api("/api/symbol-rules", {
+      method: "POST",
+      body: JSON.stringify({
+        exchange: document.getElementById("symbol-rule-exchange").value || "paper",
+        market_type: document.getElementById("symbol-rule-market-type").value || "spot",
+        symbol: document.getElementById("symbol-rule-symbol").value,
+        min_quantity: inputNumber("symbol-rule-min-quantity", 0),
+        quantity_step: inputNumber("symbol-rule-quantity-step", 0),
+        price_tick: inputNumber("symbol-rule-price-tick", 0),
+        min_notional: inputNumber("symbol-rule-min-notional", 0),
+        max_notional: inputNumber("symbol-rule-max-notional", 0),
+        max_leverage: inputNumber("symbol-rule-max-leverage", 1),
+        is_active: document.getElementById("symbol-rule-active").checked,
+        source: document.getElementById("symbol-rule-source").value || "manual",
+      }),
+    });
+    setResult("symbol-rule-result", `${rule.exchange}/${rule.market_type}/${rule.symbol} 规则已保存。`, "success");
+    await Promise.all([loadSymbolRules(), loadAuditLogs()]);
+    toast("交易对规则已保存");
+  } catch (error) {
+    setResult("symbol-rule-result", error.message, "danger");
+  }
+}
+
+function renderSymbolRules() {
+  const rows = state.symbolRules
+    .map(
+      (rule) => `
+        <tr>
+          <td>${escapeHtml(rule.exchange)}</td>
+          <td>${escapeHtml(rule.market_type)}</td>
+          <td>${escapeHtml(rule.symbol)}</td>
+          <td>${formatRuleNumber(rule.min_quantity)}</td>
+          <td>${formatRuleNumber(rule.quantity_step)}</td>
+          <td>${formatRuleNumber(rule.price_tick)}</td>
+          <td>${formatMoney(rule.min_notional)}</td>
+          <td>${formatMoney(rule.max_notional)}</td>
+          <td>${formatRuleNumber(rule.max_leverage, 2)}</td>
+          <td><span class="chip ${rule.is_active ? "success" : "muted"}">${rule.is_active ? "启用" : "停用"}</span></td>
+          <td>${escapeHtml(rule.source || "manual")}</td>
+          <td><button class="secondary" data-edit-symbol-rule="${rule.id}" type="button">编辑</button></td>
+        </tr>`
+    )
+    .join("");
+  document.getElementById("symbol-rules-table").innerHTML = `
+    <table>
+      <thead><tr><th>交易所</th><th>市场</th><th>交易对</th><th>最小数量</th><th>数量步长</th><th>价格 tick</th><th>最小名义额</th><th>最大名义额</th><th>最大杠杆</th><th>状态</th><th>来源</th><th>操作</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="12">暂无交易对规则</td></tr>'}</tbody>
+    </table>
+  `;
+}
+
+function formatRuleNumber(value, digits = 8) {
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function editSymbolRule(id) {
+  const rule = state.symbolRules.find((item) => String(item.id) === String(id));
+  if (!rule) return;
+  document.getElementById("symbol-rule-exchange").value = rule.exchange;
+  document.getElementById("symbol-rule-market-type").value = rule.market_type;
+  document.getElementById("symbol-rule-symbol").value = rule.symbol;
+  document.getElementById("symbol-rule-min-quantity").value = rule.min_quantity;
+  document.getElementById("symbol-rule-quantity-step").value = rule.quantity_step;
+  document.getElementById("symbol-rule-price-tick").value = rule.price_tick;
+  document.getElementById("symbol-rule-min-notional").value = rule.min_notional;
+  document.getElementById("symbol-rule-max-notional").value = rule.max_notional;
+  document.getElementById("symbol-rule-max-leverage").value = rule.max_leverage;
+  document.getElementById("symbol-rule-source").value = rule.source || "manual";
+  document.getElementById("symbol-rule-active").checked = rule.is_active;
+  setResult("symbol-rule-result", `正在编辑 ${rule.symbol}。`, "warning");
 }
 
 async function loadDataSources() {
@@ -2194,6 +2295,7 @@ document.getElementById("api-key-form").addEventListener("submit", createApiKey)
 document.getElementById("create-user-form").addEventListener("submit", createUser);
 document.getElementById("change-password-form").addEventListener("submit", changePassword);
 document.getElementById("save-risk-settings").addEventListener("click", () => saveRiskSettings().catch((error) => toast(error.message)));
+document.getElementById("save-symbol-rule").addEventListener("click", () => saveSymbolRule().catch((error) => toast(error.message)));
 document.getElementById("fetch-market-data").addEventListener("click", () => fetchMarketData().catch((error) => toast(error.message)));
 document.getElementById("run-indicator-analysis").addEventListener("click", () => runIndicatorAnalysis().catch((error) => toast(error.message)));
 document.getElementById("save-watchlist").addEventListener("click", () => saveWatchlist().catch((error) => toast(error.message)));
@@ -2248,6 +2350,7 @@ document.body.addEventListener("click", (event) => {
   const applyWatchlistId = event.target.dataset?.applyWatchlist;
   const defaultWatchlistId = event.target.dataset?.defaultWatchlist;
   const deleteWatchlistId = event.target.dataset?.deleteWatchlist;
+  const editSymbolRuleId = event.target.dataset?.editSymbolRule;
   const viewBacktestId = event.target.dataset?.viewBacktest;
   const defaultStrategyId = event.target.dataset?.defaultStrategy;
   const deleteStrategyId = event.target.dataset?.deleteStrategy;
@@ -2266,6 +2369,7 @@ document.body.addEventListener("click", (event) => {
   if (applyWatchlistId) applyWatchlist(applyWatchlistId);
   if (defaultWatchlistId) setDefaultWatchlist(defaultWatchlistId).catch((error) => toast(error.message));
   if (deleteWatchlistId) deleteWatchlist(deleteWatchlistId).catch((error) => toast(error.message));
+  if (editSymbolRuleId) editSymbolRule(editSymbolRuleId);
   if (viewBacktestId) viewBacktestReport(viewBacktestId).catch((error) => toast(error.message));
   if (defaultStrategyId) setDefaultStrategyConfig(defaultStrategyId).catch((error) => toast(error.message));
   if (deleteStrategyId) deleteStrategyConfig(deleteStrategyId).catch((error) => toast(error.message));

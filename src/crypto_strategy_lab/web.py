@@ -237,6 +237,20 @@ class ExchangeSyncRequest(BaseModel):
     exchange_snapshot: Optional[dict[str, Any]] = None
 
 
+class SymbolRuleRequest(BaseModel):
+    exchange: str = "paper"
+    market_type: str = "spot"
+    symbol: str
+    min_quantity: float = Field(default=0.0, ge=0)
+    quantity_step: float = Field(default=0.0, ge=0)
+    price_tick: float = Field(default=0.0, ge=0)
+    min_notional: float = Field(default=0.0, ge=0)
+    max_notional: float = Field(default=0.0, ge=0)
+    max_leverage: float = Field(default=1.0, ge=1, le=125)
+    is_active: bool = True
+    source: str = "manual"
+
+
 class RealtimeSignalRequest(BaseModel):
     symbol: str = "BTCUSDT"
     strategy_config_id: Optional[int] = None
@@ -990,6 +1004,55 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
             **_audit_context(request),
         )
         return sync_run
+
+    @app.get("/api/symbol-rules")
+    def symbol_rules(
+        exchange: Optional[str] = None,
+        market_type: Optional[str] = None,
+        symbol: Optional[str] = None,
+        limit: int = Query(100, ge=1, le=500),
+        _: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> list[dict]:
+        return db.list_symbol_rules(exchange=exchange, market_type=market_type, symbol=symbol, limit=limit)
+
+    @app.post("/api/symbol-rules")
+    def upsert_symbol_rule(
+        payload: SymbolRuleRequest,
+        request: Request,
+        user: dict = Depends(require_any(RUN_BACKTESTS, EXECUTE_PAPER_TRADES, MANAGE_SYSTEM)),
+    ) -> dict:
+        try:
+            rule = db.upsert_symbol_rule(
+                exchange=payload.exchange,
+                market_type=payload.market_type,
+                symbol=payload.symbol,
+                min_quantity=payload.min_quantity,
+                quantity_step=payload.quantity_step,
+                price_tick=payload.price_tick,
+                min_notional=payload.min_notional,
+                max_notional=payload.max_notional,
+                max_leverage=payload.max_leverage,
+                is_active=payload.is_active,
+                source=payload.source,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        db.create_audit_log(
+            user_id=user["id"],
+            action="symbol_rule.upsert",
+            entity_type="symbol_rule",
+            entity_id=rule["id"],
+            status="ok",
+            detail={
+                "exchange": rule["exchange"],
+                "market_type": rule["market_type"],
+                "symbol": rule["symbol"],
+                "is_active": rule["is_active"],
+                "source": rule["source"],
+            },
+            **_audit_context(request),
+        )
+        return rule
 
     @app.get("/api/automation/status")
     def automation_status(
@@ -2630,6 +2693,8 @@ def _manual_order_preflight(
         estimated_liquidation_price = max(0.0, estimated_fill_price * (1 - liquidation_buffer))
     else:
         estimated_liquidation_price = estimated_fill_price * (1 + liquidation_buffer)
+    rule_exchange = "paper" if run_mode == "paper" else os.environ.get("CRYPTO_LAB_LIVE_EXCHANGE", "live")
+    symbol_rule = db.get_symbol_rule(plan["symbol"], exchange=rule_exchange, market_type=plan["market_type"])
     checks: list[dict[str, Any]] = []
 
     def add_check(name: str, passed: bool, detail: str = "") -> None:
@@ -2667,6 +2732,52 @@ def _manual_order_preflight(
         float(plan["leverage"]) <= float(risk_settings["max_leverage"]) + 1e-9,
         f"{float(plan['leverage']):.2f} <= {float(risk_settings['max_leverage']):.2f}",
     )
+    if symbol_rule:
+        min_quantity = float(symbol_rule["min_quantity"])
+        quantity_step = float(symbol_rule["quantity_step"])
+        price_tick = float(symbol_rule["price_tick"])
+        min_notional = float(symbol_rule["min_notional"])
+        max_symbol_notional = float(symbol_rule["max_notional"])
+        max_symbol_leverage = float(symbol_rule["max_leverage"])
+        add_check(
+            "symbol_min_quantity",
+            min_quantity <= 0 or quantity >= min_quantity - 1e-12,
+            f"{quantity:.12f} >= {min_quantity:.12f}",
+        )
+        add_check(
+            "symbol_quantity_step",
+            _is_step_aligned(quantity, quantity_step),
+            f"quantity={quantity:.12f}, step={quantity_step:.12f}",
+        )
+        price_fields: list[tuple[str, float]] = []
+        if plan["order_type"] is OrderType.LIMIT and payload.limit_price is not None:
+            price_fields.append(("limit_price", float(payload.limit_price)))
+        elif plan["order_type"] in {OrderType.STOP_LOSS, OrderType.TAKE_PROFIT} and payload.stop_price is not None:
+            price_fields.append(("stop_price", float(payload.stop_price)))
+        elif plan["order_type"] not in {OrderType.MARKET, OrderType.TRAILING_STOP}:
+            price_fields.append(("reference_price", reference_price))
+        price_aligned = all(_is_step_aligned(price, price_tick) for _, price in price_fields)
+        price_detail = ", ".join(f"{name}={price:.12f}" for name, price in price_fields) or "market order has no fixed price"
+        add_check(
+            "symbol_price_tick",
+            price_aligned,
+            f"{price_detail}, tick={price_tick:.12f}",
+        )
+        add_check(
+            "symbol_min_notional",
+            min_notional <= 0 or estimated_fill_notional >= min_notional - 1e-9,
+            f"{estimated_fill_notional:.4f} >= {min_notional:.4f}",
+        )
+        add_check(
+            "symbol_max_notional",
+            max_symbol_notional <= 0 or estimated_fill_notional <= max_symbol_notional + 1e-9,
+            f"{estimated_fill_notional:.4f} <= {max_symbol_notional:.4f}",
+        )
+        add_check(
+            "symbol_max_leverage",
+            max_symbol_leverage <= 0 or float(plan["leverage"]) <= max_symbol_leverage + 1e-9,
+            f"{float(plan['leverage']):.2f} <= {max_symbol_leverage:.2f}",
+        )
     if plan["post_only"]:
         add_check(
             "post_only_limit_order",
@@ -2818,6 +2929,7 @@ def _manual_order_preflight(
         "estimated_funding_8h": estimated_funding_8h,
         "funding_bps_per_8h": payload.funding_bps_per_8h,
         "estimated_liquidation_price": estimated_liquidation_price,
+        "symbol_rule": symbol_rule,
         "will_trigger_risk_limit": bool(failed),
         "checks": checks,
     }
@@ -2826,6 +2938,13 @@ def _manual_order_preflight(
         result["symbol_exposure_after"] = exposure["symbol_exposure_after"]
         result["gross_exposure_after"] = exposure["gross_exposure_after"]
     return result
+
+
+def _is_step_aligned(value: float, step: float) -> bool:
+    if step <= 0:
+        return True
+    quotient = value / step
+    return math.isclose(quotient, round(quotient), rel_tol=1e-12, abs_tol=1e-9)
 
 
 def _preflight_reason(check_name: str) -> str:
@@ -2838,6 +2957,12 @@ def _preflight_reason(check_name: str) -> str:
         "max_gross_exposure": "max_gross_exposure_exceeded",
         "max_open_positions": "max_open_positions_exceeded",
         "max_leverage": "max_leverage_exceeded",
+        "symbol_min_quantity": "symbol_min_quantity_not_met",
+        "symbol_quantity_step": "symbol_quantity_step_mismatch",
+        "symbol_price_tick": "symbol_price_tick_mismatch",
+        "symbol_min_notional": "symbol_min_notional_not_met",
+        "symbol_max_notional": "symbol_max_notional_exceeded",
+        "symbol_max_leverage": "symbol_max_leverage_exceeded",
         "consecutive_loss_limit": "max_consecutive_losses_exceeded",
         "order_confirmation": "order_confirmation_required",
         "post_only_limit_order": "post_only_requires_limit_order",

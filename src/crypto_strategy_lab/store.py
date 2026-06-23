@@ -231,6 +231,24 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS symbol_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    exchange TEXT NOT NULL DEFAULT 'paper',
+                    market_type TEXT NOT NULL DEFAULT 'spot',
+                    symbol TEXT NOT NULL,
+                    min_quantity REAL NOT NULL DEFAULT 0,
+                    quantity_step REAL NOT NULL DEFAULT 0,
+                    price_tick REAL NOT NULL DEFAULT 0,
+                    min_notional REAL NOT NULL DEFAULT 0,
+                    max_notional REAL NOT NULL DEFAULT 0,
+                    max_leverage REAL NOT NULL DEFAULT 1,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (exchange, market_type, symbol)
+                );
+
                 CREATE TABLE IF NOT EXISTS realtime_market_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol TEXT NOT NULL,
@@ -1240,6 +1258,131 @@ class Database:
                 values,
             ).fetchall()
             return [_public_exchange_sync_run(row) for row in rows]
+
+    def upsert_symbol_rule(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        min_quantity: float = 0.0,
+        quantity_step: float = 0.0,
+        price_tick: float = 0.0,
+        min_notional: float = 0.0,
+        max_notional: float = 0.0,
+        max_leverage: float = 1.0,
+        is_active: bool = True,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        normalized_exchange = (exchange or "paper").strip().lower()
+        normalized_market_type = (market_type or "spot").strip().lower()
+        normalized_symbol = symbol.strip().upper().replace(" ", "")
+        if not normalized_symbol:
+            raise ValueError("symbol_required")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO symbol_rules (
+                    exchange, market_type, symbol, min_quantity, quantity_step, price_tick,
+                    min_notional, max_notional, max_leverage, is_active, source, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(exchange, market_type, symbol) DO UPDATE SET
+                    min_quantity = excluded.min_quantity,
+                    quantity_step = excluded.quantity_step,
+                    price_tick = excluded.price_tick,
+                    min_notional = excluded.min_notional,
+                    max_notional = excluded.max_notional,
+                    max_leverage = excluded.max_leverage,
+                    is_active = excluded.is_active,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_exchange,
+                    normalized_market_type,
+                    normalized_symbol,
+                    float(min_quantity),
+                    float(quantity_step),
+                    float(price_tick),
+                    float(min_notional),
+                    float(max_notional),
+                    float(max_leverage),
+                    1 if is_active else 0,
+                    (source or "manual").strip().lower(),
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM symbol_rules
+                WHERE exchange = ? AND market_type = ? AND symbol = ?
+                """,
+                (normalized_exchange, normalized_market_type, normalized_symbol),
+            ).fetchone()
+            return _public_symbol_rule(row)
+
+    def get_symbol_rule(
+        self,
+        symbol: str,
+        exchange: str = "paper",
+        market_type: str = "spot",
+        active_only: bool = True,
+    ) -> dict[str, Any] | None:
+        filters = ["exchange = ?", "market_type = ?", "symbol = ?"]
+        values: list[Any] = [
+            (exchange or "paper").strip().lower(),
+            (market_type or "spot").strip().lower(),
+            symbol.strip().upper().replace(" ", ""),
+        ]
+        if active_only:
+            filters.append("is_active = 1")
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM symbol_rules
+                WHERE {' AND '.join(filters)}
+                """,
+                values,
+            ).fetchone()
+            return _public_symbol_rule(row) if row else None
+
+    def list_symbol_rules(
+        self,
+        exchange: str | None = None,
+        market_type: str | None = None,
+        symbol: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit = _bounded_limit(limit)
+        filters: list[str] = []
+        values: list[Any] = []
+        if exchange:
+            filters.append("exchange = ?")
+            values.append(exchange.strip().lower())
+        if market_type:
+            filters.append("market_type = ?")
+            values.append(market_type.strip().lower())
+        if symbol:
+            filters.append("symbol = ?")
+            values.append(symbol.strip().upper().replace(" ", ""))
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        values.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM symbol_rules
+                {where}
+                ORDER BY is_active DESC, exchange, market_type, symbol
+                LIMIT ?
+                """,
+                values,
+            ).fetchall()
+            return [_public_symbol_rule(row) for row in rows]
 
     def create_realtime_market_snapshot(
         self,
@@ -2589,6 +2732,25 @@ def _public_risk_settings(row: sqlite3.Row) -> dict[str, Any]:
         "allow_duplicate_position": bool(row["allow_duplicate_position"]),
         "auto_disable_on_daily_loss": bool(row["auto_disable_on_daily_loss"]),
         "require_live_confirmation": bool(row["require_live_confirmation"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+def _public_symbol_rule(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "exchange": row["exchange"],
+        "market_type": row["market_type"],
+        "symbol": row["symbol"],
+        "min_quantity": row["min_quantity"],
+        "quantity_step": row["quantity_step"],
+        "price_tick": row["price_tick"],
+        "min_notional": row["min_notional"],
+        "max_notional": row["max_notional"],
+        "max_leverage": row["max_leverage"],
+        "is_active": bool(row["is_active"]),
+        "source": row["source"],
+        "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
 

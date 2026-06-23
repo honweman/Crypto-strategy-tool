@@ -326,6 +326,79 @@ class WebTests(unittest.TestCase):
 
             client.patch("/api/risk-settings", json={"paper_trading_enabled": True, "max_order_notional": 5000})
 
+            symbol_rule = client.post(
+                "/api/symbol-rules",
+                json={
+                    "exchange": "paper",
+                    "market_type": "spot",
+                    "symbol": "RULEUSDT",
+                    "min_quantity": 0.5,
+                    "quantity_step": 0.5,
+                    "price_tick": 0.05,
+                    "min_notional": 100.0,
+                    "max_notional": 1000.0,
+                    "max_leverage": 2.0,
+                    "source": "test",
+                },
+            )
+            self.assertEqual(symbol_rule.status_code, 200)
+            self.assertEqual(symbol_rule.json()["symbol"], "RULEUSDT")
+            symbol_rules = client.get("/api/symbol-rules?exchange=paper&market_type=spot&symbol=RULEUSDT")
+            self.assertEqual(symbol_rules.status_code, 200)
+            self.assertEqual(len(symbol_rules.json()), 1)
+
+            rule_quantity_preflight = client.post(
+                "/api/trading/preflight",
+                json={
+                    "symbol": "RULEUSDT",
+                    "action": "open_long",
+                    "quantity": 0.25,
+                    "price": 100.0,
+                    "fee_bps": 0.0,
+                    "slippage_bps": 0.0,
+                    "run_mode": "paper",
+                },
+            )
+            self.assertEqual(rule_quantity_preflight.status_code, 200)
+            self.assertFalse(rule_quantity_preflight.json()["approved"])
+            self.assertEqual(rule_quantity_preflight.json()["reason"], "symbol_min_quantity_not_met")
+            self.assertEqual(rule_quantity_preflight.json()["symbol_rule"]["symbol"], "RULEUSDT")
+
+            rule_step_preflight = client.post(
+                "/api/trading/preflight",
+                json={
+                    "symbol": "RULEUSDT",
+                    "action": "open_long",
+                    "quantity": 0.75,
+                    "price": 200.0,
+                    "fee_bps": 0.0,
+                    "slippage_bps": 0.0,
+                    "run_mode": "paper",
+                },
+            )
+            self.assertEqual(rule_step_preflight.status_code, 200)
+            self.assertFalse(rule_step_preflight.json()["approved"])
+            self.assertEqual(rule_step_preflight.json()["reason"], "symbol_quantity_step_mismatch")
+
+            rule_tick_preflight = client.post(
+                "/api/trading/preflight",
+                json={
+                    "symbol": "RULEUSDT",
+                    "action": "open_long",
+                    "quantity": 1.0,
+                    "price": 100.0,
+                    "order_type": "limit",
+                    "time_in_force": "GTC",
+                    "limit_price": 100.03,
+                    "fee_bps": 0.0,
+                    "slippage_bps": 0.0,
+                    "run_mode": "paper",
+                },
+            )
+            self.assertEqual(rule_tick_preflight.status_code, 200)
+            self.assertFalse(rule_tick_preflight.json()["approved"])
+            self.assertEqual(rule_tick_preflight.json()["reason"], "symbol_price_tick_mismatch")
+
             approved_preflight = client.post(
                 "/api/trading/preflight",
                 json={

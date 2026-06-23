@@ -161,6 +161,33 @@ class SecurityStoreTests(unittest.TestCase):
             self.assertEqual(sync_run["status"], "matched")
             self.assertEqual(db.list_exchange_sync_runs(user["id"])[0]["exchange"], "paper")
 
+            symbol_rule = db.upsert_symbol_rule(
+                exchange="paper",
+                market_type="spot",
+                symbol="ruleusdt",
+                min_quantity=0.5,
+                quantity_step=0.1,
+                price_tick=0.01,
+                min_notional=10.0,
+                max_notional=500.0,
+                max_leverage=2.0,
+                source="unit-test",
+            )
+            self.assertEqual(symbol_rule["symbol"], "RULEUSDT")
+            self.assertTrue(symbol_rule["is_active"])
+            self.assertEqual(symbol_rule["quantity_step"], 0.1)
+            self.assertEqual(db.get_symbol_rule("RULEUSDT")["min_notional"], 10.0)
+            listed_rules = db.list_symbol_rules(exchange="paper", market_type="spot", symbol="RULEUSDT")
+            self.assertEqual(len(listed_rules), 1)
+            disabled_rule = db.upsert_symbol_rule(
+                exchange="paper",
+                market_type="spot",
+                symbol="RULEUSDT",
+                is_active=False,
+            )
+            self.assertFalse(disabled_rule["is_active"])
+            self.assertIsNone(db.get_symbol_rule("RULEUSDT"))
+
             market_snapshot = db.create_realtime_market_snapshot(
                 symbol="BTCUSDT",
                 best_bid=99.0,

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=15" />
+    <link rel="stylesheet" href="/static/app.css?v=16" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -251,6 +251,36 @@
             </div>
             <div id="exchange-sync-result" class="result-box compact-result"></div>
             <div id="exchange-sync-table" class="table-wrap"></div>
+          </section>
+
+          <section id="symbol-rule-section" class="panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Instrument Rules</p>
+                <h2>交易对规则</h2>
+              </div>
+              <button id="save-symbol-rule" type="button">保存规则</button>
+            </div>
+            <div class="form-grid compact-form">
+              <label>交易所<input id="symbol-rule-exchange" value="paper" /></label>
+              <label>市场类型
+                <select id="symbol-rule-market-type">
+                  <option value="spot">spot</option>
+                  <option value="perpetual-long-only">perpetual-long-only</option>
+                </select>
+              </label>
+              <label>交易对<input id="symbol-rule-symbol" value="BTCUSDT" /></label>
+              <label>最小数量<input id="symbol-rule-min-quantity" type="number" value="0" min="0" step="0.00000001" /></label>
+              <label>数量步长<input id="symbol-rule-quantity-step" type="number" value="0" min="0" step="0.00000001" /></label>
+              <label>价格 tick<input id="symbol-rule-price-tick" type="number" value="0" min="0" step="0.00000001" /></label>
+              <label>最小名义额<input id="symbol-rule-min-notional" type="number" value="0" min="0" step="0.01" /></label>
+              <label>最大名义额<input id="symbol-rule-max-notional" type="number" value="0" min="0" step="0.01" /></label>
+              <label>最大杠杆<input id="symbol-rule-max-leverage" type="number" value="1" min="1" max="125" step="0.1" /></label>
+              <label>来源<input id="symbol-rule-source" value="manual" /></label>
+              <label class="checkbox-row"><input id="symbol-rule-active" type="checkbox" checked /> 启用</label>
+            </div>
+            <div id="symbol-rule-result" class="result-box compact-result"></div>
+            <div id="symbol-rules-table" class="table-wrap"></div>
           </section>
 
           <section id="automation-section" class="panel" hidden>
@@ -515,6 +545,6 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=15"></script>
+    <script src="/static/app.js?v=16"></script>
   </body>
 </html>
