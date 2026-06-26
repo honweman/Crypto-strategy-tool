@@ -139,12 +139,13 @@
                   <option value="trailing_stop">追踪止损</option>
                 </select>
               </label>
-              <label>有效期
+              <label>未成交处理
                 <select id="paper-time-in-force">
-                  <option value="GTC">GTC</option>
-                  <option value="IOC">IOC</option>
-                  <option value="FOK">FOK</option>
+                  <option value="GTC">GTC - 挂单等待成交或撤单</option>
+                  <option value="IOC">IOC - 立即成交，剩余取消</option>
+                  <option value="FOK">FOK - 必须全成，否则取消</option>
                 </select>
+                <span class="field-help">主要影响限价单：没到价时继续挂单，还是立刻取消。</span>
               </label>
               <label>限价<input id="paper-limit-price" type="number" min="0" step="0.0001" /></label>
               <label>触发价<input id="paper-stop-price" type="number" min="0" step="0.0001" /></label>

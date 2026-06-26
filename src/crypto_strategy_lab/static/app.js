@@ -2093,7 +2093,7 @@ function renderOrderHistory(orders) {
           <td>${escapeHtml(order.symbol)}</td>
           <td>${escapeHtml(order.side)}</td>
           <td>${escapeHtml(order.order_type)}</td>
-          <td>${escapeHtml(order.time_in_force || "")}</td>
+          <td>${escapeHtml(formatTimeInForce(order.time_in_force))}</td>
           <td>${order.post_only ? "yes" : "no"} / ${order.reduce_only ? "yes" : "no"}</td>
           <td>${Number(order.quantity).toFixed(8)}</td>
           <td>${order.limit_price ? Number(order.limit_price).toFixed(4) : "-"}</td>
@@ -2110,10 +2110,18 @@ function renderOrderHistory(orders) {
 
   document.getElementById("orders-table").innerHTML = `
     <table>
-      <thead><tr><th>ID</th><th>用户</th><th>模式</th><th>交易所</th><th>币种</th><th>方向</th><th>类型</th><th>TIF</th><th>Post/Reduce</th><th>委托数量</th><th>限价</th><th>触发价</th><th>杠杆</th><th>成交数量</th><th>均价</th><th>状态</th><th>说明</th><th>更新时间</th></tr></thead>
+      <thead><tr><th>ID</th><th>用户</th><th>模式</th><th>交易所</th><th>币种</th><th>方向</th><th>类型</th><th>未成交处理</th><th>Post/Reduce</th><th>委托数量</th><th>限价</th><th>触发价</th><th>杠杆</th><th>成交数量</th><th>均价</th><th>状态</th><th>说明</th><th>更新时间</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="18">暂无订单</td></tr>'}</tbody>
     </table>
   `;
+}
+
+function formatTimeInForce(value) {
+  return {
+    GTC: "GTC - 挂单等待",
+    IOC: "IOC - 立即成交，剩余取消",
+    FOK: "FOK - 必须全成，否则取消",
+  }[value] || value || "";
 }
 
 async function loadStrategyCatalog() {
