@@ -25,10 +25,13 @@ EXECUTE_PAPER_TRADES = "trading:execute_paper"
 EXECUTE_LIVE_TRADES = "trading:execute_live"
 MANAGE_USERS = "users:manage"
 MANAGE_SYSTEM = "system:manage"
+VIEW_RADAR = "radar:view"
+MANAGE_RADAR = "radar:manage_self"
 
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     Role.VIEWER.value: {
+        VIEW_RADAR,
         VIEW_DASHBOARD,
         VIEW_BACKTESTS,
         VIEW_STRATEGIES,
@@ -36,6 +39,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         VIEW_OWN_TRADES,
     },
     Role.ANALYST.value: {
+        VIEW_RADAR,
+        MANAGE_RADAR,
         VIEW_DASHBOARD,
         VIEW_BACKTESTS,
         RUN_BACKTESTS,
@@ -45,6 +50,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         VIEW_OWN_TRADES,
     },
     Role.TRADER.value: {
+        VIEW_RADAR,
+        MANAGE_RADAR,
         VIEW_DASHBOARD,
         VIEW_BACKTESTS,
         RUN_BACKTESTS,
@@ -56,6 +63,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         EXECUTE_PAPER_TRADES,
     },
     Role.ADMIN.value: {
+        VIEW_RADAR,
+        MANAGE_RADAR,
         VIEW_DASHBOARD,
         VIEW_BACKTESTS,
         RUN_BACKTESTS,

@@ -4,6 +4,7 @@
 
 ## 已包含
 
+- 山寨币建仓观察：后台持续采集市值、盘口、合约持仓、链上大户/转账、多签权限和新闻，用户隔离配置，冻结信号证据及前瞻费用后收益记录。仅研究，不自动实盘下单，详见 [建仓观察说明](docs/altcoin-observer.md)。
 - 事件驱动回测引擎：行情 bar、外部事件、信号、订单、成交分层处理
 - 可配置策略模板：事件策略、均值回归、趋势跟随、通道突破、RSI、Bollinger + RSI、固定权重持有
 - 行情数据源接口：Binance、OKX、Bybit、Coinbase、KuCoin、Kraken、Bitget、CoinGecko 的公开 K 线/OHLC

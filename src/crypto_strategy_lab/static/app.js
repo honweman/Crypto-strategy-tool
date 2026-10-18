@@ -28,6 +28,8 @@ const state = {
 };
 
 const PERMISSIONS = {
+  VIEW_RADAR: "radar:view",
+  MANAGE_RADAR: "radar:manage_self",
   VIEW_DASHBOARD: "dashboard:view",
   VIEW_BACKTESTS: "backtests:view",
   RUN_BACKTESTS: "backtests:run",
@@ -45,6 +47,8 @@ const PERMISSIONS = {
 };
 
 const PERMISSION_LABELS = {
+  "radar:view": "查看建仓观察",
+  "radar:manage_self": "配置个人建仓观察",
   "api_keys:manage_all": "管理全部 API",
   "api_keys:manage_self": "管理 API",
   "backtests:run": "运行回测",
@@ -83,21 +87,21 @@ function userEffectivePermissions(user) {
 function visiblePagesForPermissions(permissions) {
   const pages = [];
   if (
-    permissions.has(PERMISSIONS.VIEW_DASHBOARD) ||
+    permissions.has(PERMISSIONS.VIEW_RADAR) || permissions.has(PERMISSIONS.VIEW_DASHBOARD) ||
     permissions.has(PERMISSIONS.VIEW_MONITORING) ||
     permissions.has(PERMISSIONS.EXECUTE_PAPER_TRADES)
   ) {
     pages.push("状态");
   }
   if (
-    permissions.has(PERMISSIONS.VIEW_TRADES) ||
+    permissions.has(PERMISSIONS.VIEW_RADAR) || permissions.has(PERMISSIONS.VIEW_TRADES) ||
     permissions.has(PERMISSIONS.VIEW_ALL_TRADES) ||
     permissions.has(PERMISSIONS.EXECUTE_PAPER_TRADES)
   ) {
     pages.push("交易记录");
   }
   if (
-    permissions.has(PERMISSIONS.VIEW_BACKTESTS) ||
+    permissions.has(PERMISSIONS.MANAGE_RADAR) || permissions.has(PERMISSIONS.VIEW_BACKTESTS) ||
     permissions.has(PERMISSIONS.RUN_BACKTESTS) ||
     permissions.has(PERMISSIONS.VIEW_STRATEGIES) ||
     permissions.has(PERMISSIONS.EXECUTE_PAPER_TRADES) ||
@@ -120,6 +124,7 @@ function hasTradePageAccess() {
 
 function hasConfigPageAccess() {
   return (
+    hasPermission(PERMISSIONS.MANAGE_RADAR) ||
     hasPermission(PERMISSIONS.VIEW_BACKTESTS) ||
     hasPermission(PERMISSIONS.RUN_BACKTESTS) ||
     hasPermission(PERMISSIONS.VIEW_STRATEGIES) ||
@@ -135,12 +140,12 @@ function hasConfigPageAccess() {
 function isPageAllowed(page) {
   if (page === "status") {
     return (
-      hasPermission(PERMISSIONS.VIEW_DASHBOARD) ||
+      hasPermission(PERMISSIONS.VIEW_RADAR) || hasPermission(PERMISSIONS.VIEW_DASHBOARD) ||
       hasPermission(PERMISSIONS.VIEW_MONITORING) ||
       hasPermission(PERMISSIONS.EXECUTE_PAPER_TRADES)
     );
   }
-  if (page === "trades") return hasTradePageAccess();
+  if (page === "trades") return hasTradePageAccess() || hasPermission(PERMISSIONS.VIEW_RADAR);
   if (page === "config") return hasConfigPageAccess();
   return false;
 }
@@ -165,7 +170,10 @@ function setActivePage(page = state.activePage) {
     window.history.replaceState(null, "", `#${nextPage}`);
   }
   if (state.user) {
+    const cached = state.loadedPages[nextPage];
     loadPageData(nextPage).catch((error) => toast(error.message));
+    if (cached && nextPage === "status") loadRadar();
+    if (cached && nextPage === "trades") loadRadarSignals();
   }
 }
 
@@ -183,12 +191,16 @@ async function api(path, options = {}) {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.detail || `request failed: ${response.status}`);
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map(item => `${(item.loc || []).slice(1).join(".")}: ${item.msg}`).join("; ")
+      : data.detail;
+    throw new Error(detail || `request failed: ${response.status}`);
   }
   return data;
 }
 
 function showLogin() {
+  resetRadar();
   document.getElementById("login-view").hidden = false;
   document.getElementById("app-view").hidden = true;
   window.history.replaceState(null, "", window.location.pathname);
@@ -319,12 +331,14 @@ async function loadPageData(page, options = {}) {
 
   const loaders = {
     status: [
+      () => loadRadar(),
       () => loadMonitoring({ includeTradeRecords: false }),
       () => loadPaperTrading(),
       () => loadStrategyConfigs(),
       () => loadRealtime(),
     ],
     trades: [
+      () => loadRadarSignals(),
       () => loadMonitoring({ includeTradeRecords: true }),
       () => loadOrderHistory(),
       () => loadPaperTrading(),
@@ -332,6 +346,7 @@ async function loadPageData(page, options = {}) {
       () => loadNotifications(),
     ],
     config: [
+      () => loadRadarConfig(),
       () => loadDataSources(),
       () => loadMarketQuoteSources(),
       () => loadIndicatorCatalog(),
@@ -361,6 +376,7 @@ async function loadPageData(page, options = {}) {
 }
 
 function renderShell() {
+  radarSession();
   document.getElementById("current-user").textContent = state.user.email;
   document.getElementById("current-role").textContent = state.user.role;
   renderPermissionChips();

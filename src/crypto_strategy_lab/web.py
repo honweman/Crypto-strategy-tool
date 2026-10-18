@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+from contextlib import asynccontextmanager
 from itertools import product
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -52,6 +53,8 @@ from .permissions import (
     permissions_for_user,
 )
 from .risk import RiskConfig, RiskManager
+from .radar_api import register_radar_routes
+from .radar_service import RadarService
 from .security import SecretBox, verify_password
 from .store import Database, utc_now
 from .strategy_registry import create_strategy, list_strategy_definitions, validate_parameters
@@ -408,8 +411,19 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
     db.init_schema()
     _bootstrap_admin(db)
 
-    app = FastAPI(title="Crypto Strategy Lab", version="0.1.0")
+    radar = RadarService(db, notify=_emit_notification)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        await radar.start()
+        try:
+            yield
+        finally:
+            await radar.close()
+
+    app = FastAPI(title="Crypto Strategy Lab", version="0.1.0", lifespan=lifespan)
     app.state.db = db
+    app.state.radar = radar
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     def current_user(request: Request) -> dict:
@@ -434,6 +448,8 @@ def create_app(db_path: str | Path | None = None, secret_key: str | None = None)
             return user
 
         return dependency
+
+    register_radar_routes(app, radar, require)
 
     @app.get("/")
     def index() -> FileResponse:

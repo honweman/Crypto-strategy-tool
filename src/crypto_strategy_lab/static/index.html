@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=19" />
+    <link rel="stylesheet" href="/static/app.css?v=20" />
+    <link rel="stylesheet" href="/static/radar.css?v=20" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -15,11 +16,11 @@
         </div>
         <label>
           邮箱
-          <input id="login-email" name="email" type="email" autocomplete="username" value="admin@example.com" required />
+          <input id="login-email" name="email" type="email" autocomplete="username" required />
         </label>
         <label>
           密码
-          <input id="login-password" name="password" type="password" autocomplete="current-password" value="change-me-now" required />
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required />
         </label>
         <button type="submit">登录</button>
         <p id="login-error" class="error-line"></p>
@@ -51,10 +52,26 @@
               <span class="label">角色</span>
               <strong id="current-role"></strong>
             </div>
-            <div>
-              <span class="label">权限</span>
+            <details class="permission-disclosure">
+              <summary>账户权限</summary>
               <div id="current-permissions" class="chip-list"></div>
+            </details>
+          </section>
+
+          <section id="radar-section" class="radar-section" hidden>
+            <div class="section-head">
+              <div><p class="eyebrow">Altcoin Observer</p><h2>山寨币建仓观察</h2></div>
+              <button id="radar-refresh" type="button">立即采集</button>
             </div>
+            <div class="radar-toolbar">
+              <p id="radar-worker" role="status">正在加载</p>
+              <label>筛选<select id="radar-filter"><option value="all">全部状态</option><option value="candidate">观察候选</option><option value="avoid">风险复核</option><option value="incomplete">数据不全</option><option value="warming">积累样本</option></select></label>
+              <label>排序<select id="radar-sort"><option value="score">机会分优先</option><option value="risk">风险分优先</option><option value="symbol">币种名称</option></select></label>
+            </div>
+            <div id="radar-error" class="error-line" role="alert"></div>
+            <div id="radar-summary" class="radar-metrics"></div>
+            <div id="radar-table" class="table-wrap" tabindex="0" aria-label="建仓观察列表"></div>
+            <div id="radar-detail" class="radar-detail"></div>
           </section>
 
           <section id="monitoring-section" class="panel" hidden>
@@ -111,6 +128,12 @@
         </section>
 
         <section id="trades-page" class="page" data-page="trades" hidden>
+          <section id="radar-journal-section" class="radar-section" hidden>
+            <div class="section-head"><div><p class="eyebrow">Forward Observation</p><h2>建仓观察信号记录</h2></div><button id="radar-signals-refresh" type="button">刷新信号</button></div>
+            <p class="radar-note">前瞻观察，非实际成交或历史回测；买入用卖一价，退出用买一价，双边扣除记录时的手续费与滑点。</p>
+            <div id="radar-journal" class="table-wrap" tabindex="0" aria-label="信号与前瞻收益"></div>
+            <div id="radar-signal-detail"></div>
+          </section>
           <section id="trading-section" class="panel" hidden>
             <div class="section-head">
               <div>
@@ -199,6 +222,29 @@
         </section>
 
         <section id="config-page" class="page" data-page="config" hidden>
+          <section id="radar-config-section" class="radar-section" hidden>
+            <div class="section-head"><div><p class="eyebrow">Observer Settings</p><h2>建仓观察配置</h2></div></div>
+            <form id="radar-settings-form"><fieldset id="radar-settings-fields" class="radar-fields"></fieldset><button type="submit">保存观察配置</button></form>
+            <div class="subhead"><h3>观察币种</h3><button id="radar-add" type="button">添加币种</button></div>
+            <div id="radar-config-list" class="table-wrap"></div>
+            <form id="radar-asset-form" hidden>
+              <h3 id="radar-asset-title">添加币种</h3>
+              <div class="radar-fields">
+                <label>代号<input name="symbol" required pattern="[A-Z0-9]{2,15}" maxlength="15" /></label>
+                <label>项目全名<input name="name" required minlength="2" maxlength="80" /></label>
+                <label>CoinGecko ID<input name="coingecko_id" required pattern="[a-z0-9][a-z0-9-]{0,99}" /></label>
+                <label>链<select name="chain"><option value="ethereum">Ethereum</option><option value="base">Base</option></select></label>
+                <label class="radar-wide">代币合约<input name="contract" required pattern="0x[a-fA-F0-9]{40}" spellcheck="false" /></label>
+                <label class="radar-wide">Governor 合约（可选）<input name="governor" pattern="0x[a-fA-F0-9]{40}" spellcheck="false" /></label>
+                <label>Binance 交易对<input name="exchange_symbol" required pattern="[A-Z0-9]{2,15}USDT" /></label>
+                <label class="checkbox-row"><input name="enabled" type="checkbox" checked />启用此币种</label>
+              </div>
+              <div class="subhead"><h3>地址标签</h3><button id="radar-add-label" class="secondary" type="button">添加地址标签</button></div>
+              <div id="radar-labels"></div>
+              <div class="button-row"><button type="submit">保存币种</button><button id="radar-cancel-asset" class="secondary" type="button">取消</button></div>
+            </form>
+            <div id="radar-config-result" role="status" class="radar-note"></div>
+          </section>
           <section id="account-section" class="panel">
             <div class="section-head">
               <div>
@@ -650,6 +696,7 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=19"></script>
+    <script src="/static/radar.js?v=20"></script>
+    <script src="/static/app.js?v=20"></script>
   </body>
 </html>
