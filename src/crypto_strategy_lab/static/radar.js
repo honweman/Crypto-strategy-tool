@@ -26,6 +26,9 @@ const radarFields = [
   ["max_amihud_bps", "Amihud 上限（bps/百万USDT）", 0.01, 100000, 0.01],
   ["max_basis_bps", "永续标记价偏离上限（bps）", 1, 5000, 1],
   ["max_oi_volume_ratio", "OI / 现货成交额上限（倍）", 0.1, 1000, 0.1],
+  ["factor_correlation_threshold", "因子合并相关性门槛", 0.8, 0.99, 0.01],
+  ["max_tail_loss_pct", "历史尾部损失上限（%）", 1, 100, 0.5],
+  ["max_amihud_ratio", "非流动性恶化上限（倍）", 1, 100, 0.1],
 ];
 const radarEl = (id) => document.getElementById(id);
 const radarEsc = (value) => escapeHtml(String(value ?? ""));
@@ -146,7 +149,7 @@ function renderRadarDetail(watch) {
       <p class="radar-note">Binance 已收盘日线 · RSI14（简单均值）${radarNum(fresh("spot").rsi14)} · 30 日回撤 ${radarPct(fresh("spot").drawdown_30d_pct)}</p>
       <h3>合约持仓与资金费</h3><p class="radar-note">Binance USD-M 持仓名义额 ${radarNum(d.open_interest_usdt,0)} USDT · 24h 持仓变化 ${radarPct(d.oi_change_24h_pct)}<br>本期资金费 ${radarNum(d.funding_bps)} bps · 最近结算间隔 ${radarNum(d.observed_funding_interval_hours)} 小时 · 下次结算 ${radarTime(d.next_funding_at)}</p></section>
     <section class="radar-evidence"><h3>数据来源与时效</h3>${Object.entries(radarNames).map(([key,label]) => { const source=sources[key] || {}; return `<div class="radar-source"><strong>${label}</strong><span>${e.fresh_sources[key] ? "有效" : source.status === "error" ? `不可用 · ${radarEsc(source.error)}` : "缺失或过期"}<br>${radarTime(source.observed_at)}</span>${radarLink(source.url,"原始来源")}</div>`; }).join("")}<p class="radar-note">${radarEsc(e.rule_version)} · ${radarTime(e.evaluated_at)}</p></section></div>
-    <div class="radar-two"><section class="radar-evidence"><h3>机会分 ${e.score} / 100</h3>${list(e.factors.map(f => `+${f.points} · ${radarEsc(f.label)}`),"暂无符合条件的正向因子")}</section>
+    <div class="radar-two"><section class="radar-evidence"><h3>机会分 ${e.score} / 100</h3><p class="radar-note">去重后本轮理论上限 ${radarNum(e.score_ceiling ?? 100)}；不按剩余权重重新归一化。</p>${list(e.factors.map(f => `+${f.points} · ${radarEsc(f.label)}${f.components ? `<small>结构合并，原始分 ${f.components.map(c=>radarEsc(c.label)+" "+c.points).join("；")}，取最高单项后缩放。</small>` : ""}`),"暂无符合条件的正向因子")}</section>
     <section class="radar-evidence"><h3>风险分 ${e.risk_score} / 100</h3>${list(e.risks.map(r => `+${r.points} · ${radarEsc(r.label)}`),"已覆盖数据中未触发规则，不代表没有风险")}${list(e.blockers.map(b => radarEsc(radarBlock(b))),"已达到规则观察门槛，仍须人工复核")}</section></div>
     ${renderRadarFactors(e.factor_model, sources)}
     <div class="radar-two"><section class="radar-evidence"><h3>大户持仓与转账</h3><p class="radar-note">${e.holder_delta ? `共同 ${e.holder_delta.addresses} 个地址 · ${radarNum(e.holder_delta.window_seconds/3600,1)} 小时余额变化 ${radarPct(e.holder_delta.pct)}` : "尚无可比较的大户历史样本"}<br>前十地址占比 ${h.top10_share == null ? "—" : radarNum(h.top10_share*100) + "%"} · 样本 ${radarNum(h.sample_size,0)} 个地址</p>
@@ -175,13 +178,33 @@ function renderRadarFactors(model, sources) {
   const selected = new Set(model.groups.map(group => group.id));
   const stateLabel = {missing: "缺失", passed: "达标", not_met: "未达标"};
   return `<section class="radar-evidence radar-factor-section"><h3>选币因子 · ${model.points} / ${model.max_points} 分</h3>
-    <p class="radar-note">有效评分数据 ${model.coverage}% · 日线截至 ${radarTime(model.as_of)}<br>日线因子每日更新；每组上限 5 分，缺失值不补分。基础观察规则占 ${100-model.max_points} 分。规则未经过样本外收益验证。</p>
-    <div class="radar-factor-groups">${Object.entries(groups).map(([key,label]) => { const group=model.groups.find(g => g.id===key); return `<span>${radarEsc(label)} <strong>${group ? group.points + " / 5" : "不评分"}</strong></span>`; }).join("")}</div>
+    <p class="radar-note">有效评分数据 ${model.coverage}% · 日线截至 ${radarTime(model.as_of)}<br>合并后有效上限 ${model.effective_max_points ?? model.max_points} 分，原始预算 ${model.max_points} 分。缺失与省去的权重不补分。新增诊断指标不自动变为买入加分项。规则未经过样本外收益验证。</p>
+    <div class="radar-factor-groups">${Object.entries(groups).map(([key,label]) => { const group=model.groups.find(g => g.id===key); return `<span>${radarEsc(label)} <strong>${group ? group.points + " / " + (group.effective_max_points ?? 5) : "不评分"}</strong></span>`; }).join("")}</div>
+    ${renderRadarCorrelation(model)}
     <div class="table-wrap"><table class="radar-factor-table"><thead><tr><th>因子</th><th>数值</th><th>评分条件</th><th>结果 / 分数</th><th>口径与来源</th></tr></thead><tbody>${model.metrics.map(metric => {
       const check=checks[metric.key], source=sources[metric.source] || {};
-      return `<tr><td>${radarEsc(metric.label)}<small>${radarEsc(groups[metric.group])}</small></td><td>${radarNum(metric.value,3)} ${metric.value == null ? "" : radarEsc(metric.unit)}</td><td>${check ? radarEsc(check.condition) : "不单独加分"}</td><td>${check ? `${stateLabel[check.status]} · ${check.points}/${check.max_points}` : selected.has(metric.group) ? "背景指标" : "组已关闭"}</td><td>${radarEsc(metric.interpretation)}<small>${radarEsc(radarNames[metric.source])} · ${radarTime(source.observed_at)}${metric.key === "oi_to_spot_volume" ? `<br>现货成交额 · ${radarTime(sources.spot?.observed_at)}` : ""}</small></td></tr>`;
+      const merged=model.groups.some(g=>(g.clusters || []).some(c=>c.keys.length>1 && c.keys.includes(metric.key)));
+      return `<tr><td>${radarEsc(metric.label)}<small>${radarEsc(groups[metric.group])}</small></td><td>${radarNum(metric.value,3)} ${metric.value == null ? "" : radarEsc(metric.unit)}</td><td>${check ? radarEsc(check.condition) : "不单独加分"}</td><td>${check ? `${stateLabel[check.status]} · ${merged ? "已合并，原始 " : ""}${check.points}/${check.max_points}` : selected.has(metric.group) ? "诊断指标" : "组已关闭"}</td><td>${radarEsc(metric.interpretation)}<small>${radarEsc(radarNames[metric.source])} · ${radarTime(source.observed_at)}${metric.key === "oi_to_spot_volume" ? `<br>现货成交额 · ${radarTime(sources.spot?.observed_at)}` : ""}</small></td></tr>`;
     }).join("")}</tbody></table></div>
     <details><summary>尚未接入的因子</summary><ul>${(radarState.data.deferred_factors || []).map(x => `<li>${radarEsc(x.name)}：${radarEsc(x.requirement)}。不参与评分。</li>`).join("")}</ul></details></section>`;
+}
+function renderRadarCorrelation(model) {
+  const dedup=model.deduplication;
+  if(!dedup) return "";
+  const labels=Object.fromEntries(model.metrics.map(m=>[m.key,m.label]));
+  const names=keys=>keys.map(k=>radarEsc(labels[k] || k)).join(" + ");
+  const report=dedup.correlation;
+  const merges=model.groups.flatMap(g=>(g.clusters || []).filter(c=>c.keys.length>1));
+  const pairs=(dedup.strong_pairs || []).slice().sort((a,b)=>Math.abs(b.rho)-Math.abs(a.rho));
+  return `<div class="radar-correlation"><h4>因子合并与相关性</h4>
+    <p class="radar-note">${report ? `截至 ${radarTime(report.end)} · 最多 ${report.window} 日，已重建 ${report.days} 个日度样本` : "历史相关性尚不可用，仅执行结构合并"} · 门槛 |ρ| ≥ ${radarNum(dedup.threshold,2)}</p>
+    <ul>${merges.map(c=>`<li>${names(c.keys)}<small>${c.reason==="structural" ? "结构合并，未声称实测高相关" : "稳定历史相关，同向评分合并"} · 合并得分 ${c.points}/${c.max_points} · 去除重复预算 ${c.removed_budget}</small></li>`).join("") || "<li>当前启用评分项没有需要合并的组合。</li>"}</ul>
+    <details><summary>历史相关性证据 · ${pairs.length} 对</summary>
+      <p class="radar-note">至少 90 个连续共同日度样本，前后半段关系同向且稳定。不把五分钟重复快照当作新样本。滚动窗口有重叠，不代表独立样本或统计显著性。只比较同一组的日线指标；资金费、链上与新闻因历史不足未纳入。</p>
+      <ul>${(dedup.diagnostic_clusters || []).map(c=>`<li>诊断簇：${names(c)}</li>`).join("")}</ul>
+      <p class="radar-note">诊断簇保留所有原始指标。只有已启用、评分方向一致的项目参与计分合并；风险检查及安全硬门槛不关闭。</p>
+      <div class="table-wrap"><table class="radar-correlation-table"><thead><tr><th>因子对</th><th>ρ</th><th>前半 / 后半</th><th>样本日</th></tr></thead><tbody>${pairs.slice(0,30).map(p=>`<tr><td>${names([p.left,p.right])}</td><td>${radarNum(p.rho,3)}</td><td>${radarNum(p.early_rho,3)} / ${radarNum(p.late_rho,3)}</td><td>${p.n}</td></tr>`).join("") || "<tr><td colspan=4>无达到样本量与稳定性要求的强相关对。</td></tr>"}</tbody></table></div>
+      ${pairs.length>30 ? "<p class=radar-note>仅展示前 30 对；完整证据随观察快照保存。</p>" : ""}</details></div>`;
 }
 function drawRadarChart(points) {
   const canvas = radarEl("radar-price-chart");

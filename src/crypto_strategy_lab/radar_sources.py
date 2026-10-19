@@ -19,7 +19,7 @@ from eth_abi.exceptions import DecodingError
 from eth_utils import keccak
 
 from .radar import number, source_fresh
-from .radar_factors import calculate_technicals, closed_daily_bars
+from .radar_factors import technical_bundle, closed_daily_bars
 
 CHAINS = {
     "ethereum": {"explorer": "https://eth.blockscout.com", "rpc": "https://ethereum-rpc.publicnode.com",
@@ -169,7 +169,7 @@ class PublicData:
         ticker, depth, candles = await asyncio.gather(
             self.fetch(base + "/api/v3/ticker/24hr", {"symbol": symbol}, ttl=60),
             self.fetch(base + "/api/v3/depth", {"symbol": symbol, "limit": 100}, ttl=30),
-            self.fetch(base + "/api/v3/klines", {"symbol": symbol, "interval": "1d", "limit": 120}, ttl=300))
+            self.fetch(base + "/api/v3/klines", {"symbol": symbol, "interval": "1d", "limit": 300}, ttl=300))
         if ticker.get("symbol") != symbol:
             raise DataUnavailable("spot_symbol_mismatch")
         bids, asks = depth.get("bids", []), depth.get("asks", [])
@@ -202,12 +202,12 @@ class PublicData:
 
     async def technicals(self, asset: dict) -> dict:
         url = "https://api.binance.com/api/v3/klines"
-        params = [{"symbol": symbol, "interval": "1d", "limit": 120}
+        params = [{"symbol": symbol, "interval": "1d", "limit": 300}
                   for symbol in (asset["exchange_symbol"], "BTCUSDT", "ETHUSDT")]
         raw = await asyncio.gather(*(self.fetch(url, p, ttl=300) for p in params))
         now = time.time()
         try:
-            data = calculate_technicals(*(closed_daily_bars(rows, now) for rows in raw))
+            data = await asyncio.to_thread(technical_bundle, *(closed_daily_bars(rows, now) for rows in raw))
         except ValueError as exc:
             raise DataUnavailable(str(exc)) from None
         return result("Binance Spot / UTC daily", "https://www.binance.com/en/trade/" + asset["symbol"] + "_USDT",

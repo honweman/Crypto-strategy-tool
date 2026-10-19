@@ -132,9 +132,9 @@ class FactorScoringTests(unittest.TestCase):
 
     def test_group_caps_and_score_accounting(self):
         result = self.evaluate()
-        self.assertEqual(result["factor_model"]["points"], 20)
+        self.assertEqual(result["factor_model"]["points"], 17)
         self.assertEqual(result["factor_model"]["coverage"], 100)
-        self.assertEqual(len(result["factor_model"]["metrics"]), 24)
+        self.assertEqual(len(result["factor_model"]["metrics"]), 32)
         self.assertEqual(sum(f["points"] for f in result["factors"]), result["score"])
         for group in result["factor_model"]["groups"]:
             self.assertLessEqual(group["points"], 5)
@@ -148,14 +148,14 @@ class FactorScoringTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("factor_data_incomplete", result["blockers"])
             self.assertEqual(result["factor_model"]["points"], 2)
-            self.assertEqual(result["score"], 82)
+            self.assertEqual(result["score"], 70)
             self.sources["technicals"] = original
 
     def test_all_disabled_restores_base_weights_not_core_safety_bypass(self):
         self.settings["enabled_factor_groups"] = []
         self.sources.pop("technicals")
         result = self.evaluate()
-        self.assertEqual(result["score"], 100)
+        self.assertEqual(result["score"], 85)
         self.assertEqual(result["coverage"], 100)
         self.assertEqual(result["factor_model"]["max_points"], 0)
         self.sources["governance"]["status"] = "error"
@@ -166,7 +166,7 @@ class FactorScoringTests(unittest.TestCase):
         self.sources["technicals"]["data"].pop("taker_buy_share_7d_pct")
         result = self.evaluate()
         self.assertEqual(result["factor_model"]["coverage"], 60)
-        self.assertEqual(result["score"], 98)
+        self.assertEqual(result["score"], 83.75)
         self.assertEqual(result["status"], "incomplete")
 
     def test_nonfinite_factor_and_zero_spot_volume_marked_missing(self):
@@ -204,7 +204,7 @@ class FactorSourceTests(unittest.IsolatedAsyncioTestCase):
         def respond(request):
             requests.append(request)
             if request.url.path.endswith("klines"):
-                self.assertEqual(request.url.params["limit"], "120")
+                self.assertEqual(request.url.params["limit"], "300")
                 return httpx.Response(200, json=rows)
             if request.url.path.endswith("depth"):
                 return httpx.Response(200, json={"bids": [["218.9", "1000"]], "asks": [["219.1", "1000"]]})

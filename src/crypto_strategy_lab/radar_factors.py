@@ -5,6 +5,8 @@ import math
 import statistics
 from typing import Any
 
+from .radar_correlation import correlation_report, complete_link, merge_checks, stable_pair
+
 GROUPS = {"momentum": "相对强弱与趋势", "flow": "量能与流动性",
           "volatility": "波动与尾部风险", "regime": "市场环境与杠杆"}
 
@@ -34,6 +36,14 @@ METRICS = [
     ("perp_basis_bps", "永续标记价 / 指数价偏离", "bps", "regime", "瞬时溢折价，不是到期套利年化收益", "derivatives"),
     ("oi_to_spot_volume", "合约 OI / 现货 24h 成交额", "倍", "regime", "同平台 USDT 名义额的存量/流量比；不是全市场杠杆倍数", "derivatives"),
     ("fdv_market_cap", "FDV / 流通市值", "倍", "regime", "潜在稀释代理；不能代替未来 7/30 天实际解锁日历", "market"),
+    ("residual_momentum_7d_pct", "BTC 残差动量 / 7 日", "%", "momentum", "用此前 60 日估计截距与 BTC Beta，再累加最近 7 日样本外残差；不是已验证 alpha", "technicals"),
+    ("residual_volatility_60d_pct", "特异波动率 / 60 日", "%", "volatility", "60 日 BTC 单因子回归残差标准差年化；不等于纯项目风险", "technicals"),
+    ("downside_deviation_30d_pct", "下行半偏差 / 30 日", "%", "volatility", "对零收益目标的负日对数收益平方均值开根号并年化，分母包含全部 30 日", "technicals"),
+    ("tail_loss_90d_pct", "历史尾部损失 / 90 日", "%", "volatility", "90 个日收益中最差 5 日的平均损失，下限为零；小样本 ES 代理而非未来损失上限", "technicals"),
+    ("volume_concentration_7d_pct", "单日成交集中度 / 7 日", "%", "flow", "七日最大单日成交额占七日总额，异常集中不等于刷量", "technicals"),
+    ("amihud_ratio_7_30", "非流动性恶化 / 7 对前 30 日", "倍", "flow", "最近七日 Amihud 除此前不重叠三十日均值，零成交额或零分母时缺失", "technicals"),
+    ("taker_buy_change_7d_pp", "主动买入占比变化 / 7 日", "百分点", "flow", "最近七日相对此前七日主动买入成交占比变化，不是净流入", "technicals"),
+    ("close_location_7d", "成交额加权收盘位置 / 7 日", "", "flow", "日收盘在高低区间的位置，按七日成交额加权；[-1,1]，平价日取零", "technicals"),
 ]
 DEFERRED_FACTORS = [
     {"name": "未来 7/30 天代币解锁", "requirement": "需核验归属计划、解锁地址、数量和当时已知的公告时间"},
@@ -41,6 +51,9 @@ DEFERRED_FACTORS = [
     {"name": "活跃地址与新增用户", "requirement": "需剔除机器人、空投刷量及地址聚类，不能用持币地址数代替用户数"},
     {"name": "社交关注与情绪", "requirement": "需合规授权数据源及机器人过滤，不能把新闻条数当成全网热度"},
     {"name": "开发者活跃度与板块轮动", "requirement": "需核验官方代码仓库、板块成分及历史时点，避免幸存者偏差"},
+    {"name": "Upbit 本地溢价与成交占比", "requirement": "需同步币种身份、KRW/USD 汇率及跨所时点；不能把韩元报价直接与 USDT 相减"},
+    {"name": "订单簿韧性与撤单异常", "requirement": "需连续深度增量及序列校验；单次大挂单不证明操纵"},
+    {"name": "资金费率分位与清算压力", "requirement": "需完整历史费率、实际结算周期和清算覆盖；当前费率不代替历史分位"},
 ]
 
 
@@ -133,8 +146,62 @@ def calculate_technicals(asset: list[dict], btc: list[dict], eth: list[dict]) ->
     output["correlation_btc_30d"] = max(-1, min(1, covariance/math.sqrt(var_a*var_b))) if min(var_a, var_b) > 1e-16 else None
     output["btc_sma60_distance_pct"] = (btc[-1]["close"]/statistics.mean(b["close"] for b in btc[-60:])-1)*100 if len(btc) >= 60 else None
     output["btc_return_7d_pct"] = ret(btc, 7)
+    output["downside_deviation_30d_pct"] = math.sqrt(statistics.mean(min(r, 0)**2 for r in returns))*math.sqrt(365)*100
+    output["tail_loss_90d_pct"] = None
+    if len(closes) >= 91:
+        tail = sorted((b/a-1)*100 for a, b in zip(closes[-91:-1], closes[-90:]))[:5]
+        output["tail_loss_90d_pct"] = max(0, -statistics.mean(tail))
+    output["volume_concentration_7d_pct"] = max(quote[-7:])/volume7*100 if volume7 else None
+    prior7 = sum(quote[-14:-7])
+    output["taker_buy_change_7d_pp"] = (output["taker_buy_share_7d_pct"] - sum(b["buy_quote"] for b in asset[-14:-7])/prior7*100
+                                         if prior7 and volume7 else None)
+    output["close_location_7d"] = (sum(((2*b["close"]-b["high"]-b["low"])/(b["high"]-b["low"])
+                                       if b["high"] > b["low"] else 0)*b["quote_volume"] for b in asset[-7:])/volume7
+                                   if volume7 else None)
+    output["amihud_ratio_7_30"] = None
+    if len(closes) >= 38 and min(quote[-37:]) > 0:
+        impacts = [abs(b/a-1)/q for a, b, q in zip(closes[-38:-1], closes[-37:], quote[-37:])]
+        prior = statistics.mean(impacts[:30])
+        output["amihud_ratio_7_30"] = statistics.mean(impacts[-7:])/prior if prior > 0 else None
+
+    def regression(bars):
+        ar = [math.log(b["close"]/a["close"]) for a, b in zip(bars, bars[1:])]
+        br = [math.log(btc_by_time[b["at"]]["close"]/btc_by_time[a["at"]]["close"]) for a, b in zip(bars, bars[1:])]
+        ma, mb, vb = statistics.mean(ar), statistics.mean(br), statistics.variance(br)
+        if vb <= 1e-16:
+            return None
+        beta = sum((a-ma)*(b-mb) for a, b in zip(ar, br))/(len(ar)-1)/vb
+        alpha = ma-beta*mb
+        return alpha, beta, [a-alpha-beta*b for a, b in zip(ar, br)]
+
+    output["residual_momentum_7d_pct"] = output["residual_volatility_60d_pct"] = None
+    if len(asset) >= 61:
+        fitted = regression(asset[-61:])
+        if fitted:
+            output["residual_volatility_60d_pct"] = statistics.stdev(fitted[2])*math.sqrt(365)*100
+    if len(asset) >= 68:
+        fitted = regression(asset[-68:-7])
+        if fitted:
+            alpha, beta, _ = fitted
+            residuals = [math.log(b["close"]/a["close"])-alpha-beta*math.log(btc_by_time[b["at"]]["close"]/btc_by_time[a["at"]]["close"])
+                         for a, b in zip(asset[-8:-1], asset[-7:])]
+            output["residual_momentum_7d_pct"] = math.expm1(sum(residuals))*100
     if any(isinstance(value, float) and not math.isfinite(value) for value in output.values()):
         raise ValueError("nonfinite_factor_calculation")
+    return output
+
+
+def technical_bundle(asset, btc, eth):
+    output = calculate_technicals(asset, btc, eth)
+    groups = {key: group for key, _, _, group, _, source in METRICS if source == "technicals"}
+    history = []
+    btc_by_time, eth_by_time = {b["at"]: i for i, b in enumerate(btc)}, {b["at"]: i for i, b in enumerate(eth)}
+    # Reconstruct daily features only from the prefix known on that date, not today's values.
+    for end in range(max(31, len(asset)-180), len(asset)):
+        at = asset[end-1]["at"]
+        daily = calculate_technicals(asset[:end], btc[:btc_by_time[at]+1], eth[:eth_by_time[at]+1])
+        history.append({"at": at, **{key: daily.get(key) for key in groups}})
+    output["correlation"] = correlation_report(history, groups, output["as_of"])
     return output
 
 
@@ -150,6 +217,15 @@ def factor_diagnostics(data: dict, config: dict) -> dict:
     values = {key: finite(value) for key, value in values.items()}
     groups, risks, blockers, points, available = [], [], [], 0, 0
     selected = config["enabled_factor_groups"]
+    report = technical.get("correlation", {})
+    valid_report = (report.get("version") == "daily-spearman-v1" and report.get("cutoff") == technical.get("as_of")
+                    and report.get("end") is not None and report["end"] < technical.get("as_of", 0))
+    pairs = report.get("pairs", []) if valid_report else []
+    threshold = config["factor_correlation_threshold"]
+    structural = [("rs_btc_7d_pct", "rs_eth_7d_pct"), ("volatility_30d_pct", "atr14_pct")]
+    orientations = {"rs_btc_7d_pct": 1, "rs_btc_30d_pct": 1, "rs_eth_7d_pct": 1,
+                    "sma20_slope_5d_pct": 1, "volatility_30d_pct": -1, "atr14_pct": -1,
+                    "max_drawdown_90d_pct": 1, "btc_sma60_distance_pct": 1, "btc_return_7d_pct": 1}
     checks = {
         "momentum": [("rs_btc_7d_pct", 2, lambda x: x > 0), ("rs_btc_30d_pct", 1, lambda x: x > 0),
                      ("rs_eth_7d_pct", 1, lambda x: x > 0), ("sma20_slope_5d_pct", 1, lambda x: x > 0)],
@@ -181,9 +257,12 @@ def factor_diagnostics(data: dict, config: dict) -> dict:
             details.append({"key": key, "label": labels[key], "value": value, "max_points": weight,
                             "condition": conditions[key],
                             "points": weight if passed else 0, "status": "missing" if value is None else "passed" if passed else "not_met"})
-        groups.append({"id": group, "label": GROUPS[group], "points": earned, "max_points": 5,
-                       "coverage": covered/5*100, "checks": details})
-        points += earned
+        clusters = merge_checks(details, pairs, threshold, structural, orientations)
+        merged_points = sum(c["points"] for c in clusters)
+        groups.append({"id": group, "label": GROUPS[group], "points": merged_points, "max_points": 5,
+                       "effective_max_points": sum(c["max_points"] for c in clusters),
+                       "raw_points": earned, "coverage": covered/5*100, "checks": details, "clusters": clusters})
+        points += merged_points
         available += covered
 
     def risk(group, code, label, weight, condition):
@@ -194,12 +273,14 @@ def factor_diagnostics(data: dict, config: dict) -> dict:
         v = values.get(key)
         return v is not None and (abs(v) if absolute else v) > threshold
 
-    risk("volatility", "high_volatility", "波动或真实波幅超出个人门槛", 15,
-         above("volatility_30d_pct", config["max_volatility_pct"]) or above("atr14_pct", config["max_atr_pct"]))
+    risk("volatility", "high_volatility", "波动、真实波幅或历史尾部损失超出个人门槛", 15,
+         above("volatility_30d_pct", config["max_volatility_pct"]) or above("atr14_pct", config["max_atr_pct"])
+         or above("tail_loss_90d_pct", config["max_tail_loss_pct"]))
     risk("volatility", "high_market_beta", "BTC Beta 超过 2.5，市场风险放大", 5, above("beta_btc_30d", 2.5))
     risk("flow", "volume_price_anomaly", "放量超过五倍，价格未同步转强，需复核成交质量", 10,
          above("volume_ratio_7_30", 5) and values.get("return_7d_pct") is not None and values["return_7d_pct"] <= 0)
-    risk("flow", "illiquidity", "价格冲击代理高于门槛", 10, above("amihud_30d_bps", config["max_amihud_bps"]))
+    risk("flow", "illiquidity", "价格冲击代理过高或近期流动性恶化", 10,
+         above("amihud_30d_bps", config["max_amihud_bps"]) or above("amihud_ratio_7_30", config["max_amihud_ratio"]))
     risk("flow", "zero_volume", "近 30 日存在零成交额日线，流动性或停牌需复核", 10, (technical.get("zero_volume_days_30") or 0) > 0)
     risk("regime", "derivative_crowding", "永续溢折价或 OI/现货成交额偏高", 15,
          above("perp_basis_bps", config["max_basis_bps"], True) or above("oi_to_spot_volume", config["max_oi_volume_ratio"]))
@@ -209,7 +290,13 @@ def factor_diagnostics(data: dict, config: dict) -> dict:
     coverage = round(available/max_points*100) if max_points else 100
     if max_points and coverage < config["min_factor_coverage"]:
         blockers.append("factor_data_incomplete")
-    return {"points": points, "max_points": max_points, "coverage": coverage, "groups": groups,
+    diagnostic_clusters = complete_link([key for key, _, _, group, _, source in METRICS if source == "technicals" and group in selected], pairs, threshold)
+    return {"points": points, "max_points": max_points, "effective_max_points": sum(g["effective_max_points"] for g in groups),
+            "coverage": coverage, "groups": groups,
+            "deduplication": {"threshold": threshold, "policy": "max_member_no_redistribution",
+                "correlation": report if valid_report else None,
+                "diagnostic_clusters": [c for c in diagnostic_clusters if len(c) > 1],
+                "strong_pairs": [p for p in pairs if stable_pair(p, threshold)]},
             "risks": risks, "blockers": blockers, "as_of": technical.get("as_of"),
             "metrics": [{"key": key, "label": label, "value": values[key], "unit": unit, "group": group,
                          "interpretation": interpretation, "source": source}

@@ -61,6 +61,11 @@
 #discovery-summary strong { font-size: 18px; overflow-wrap: anywhere; }
 .discovery-table td:first-child small { max-width: 200px; white-space: normal; overflow-wrap: anywhere; }
 .discovery-table td:nth-child(7) small { max-width: 180px; white-space: normal; overflow-wrap: anywhere; }
+.radar-correlation { margin: 18px 0; padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.radar-correlation h4 { margin: 0 0 8px; font-size: 15px; }
+.radar-correlation li { margin: 8px 0; overflow-wrap: anywhere; }
+.radar-evidence li > small { display: block; color: var(--muted); margin-top: 4px; line-height: 1.6; }
+.radar-correlation-table td:first-child { white-space: normal; min-width: 170px; max-width: 460px; }
 @media (max-width: 800px) {
   .radar-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .radar-two { grid-template-columns: minmax(0,1fr); gap: 18px; }
@@ -83,6 +88,14 @@
   .discovery-table td:first-child,.discovery-table td:nth-child(6) { grid-column: 1 / -1; }
   .discovery-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
   .discovery-table td:last-child { align-self: end; text-align: right; }
+  .radar-section .radar-correlation-table { display: block; min-width: 0; }
+  .radar-correlation-table thead { display: none; }
+  .radar-correlation-table tbody { display: block; }
+  .radar-correlation-table tr { display: grid; grid-template-columns: minmax(0,1fr); padding: 10px; border-bottom: 1px solid var(--line); }
+  .radar-section .radar-correlation-table td { min-width: 0; max-width: none; white-space: normal; overflow-wrap: anywhere; padding: 4px; border: 0; }
+  .radar-correlation-table td:nth-child(2)::before { content: "ρ："; color: var(--muted); }
+  .radar-correlation-table td:nth-child(3)::before { content: "前半 / 后半："; color: var(--muted); }
+  .radar-correlation-table td:nth-child(4)::before { content: "样本日："; color: var(--muted); }
 }
 @media (max-width: 480px) {
   .status-band { grid-template-columns: 90px minmax(0,1fr); }

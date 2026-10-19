@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .radar_factors import GROUPS, factor_diagnostics
 
-RULE_VERSION = "altcoin-observer-v2"
+RULE_VERSION = "altcoin-observer-v3"
 SOURCE_TTLS = {"market": 900, "spot": 300, "derivatives": 7200,
                "holders": 1800, "transfers": 1800, "governance": 7200, "news": 1800, "technicals": 3600}
 CRITICAL_SOURCES = {"market", "spot", "holders", "transfers", "governance"}
@@ -69,6 +69,9 @@ class RadarSettings(BaseModel):
     max_amihud_bps: float = Field(default=100, ge=0.01, le=100000, allow_inf_nan=False)
     max_basis_bps: float = Field(default=100, ge=1, le=5000, allow_inf_nan=False)
     max_oi_volume_ratio: float = Field(default=5, ge=0.1, le=1000, allow_inf_nan=False)
+    factor_correlation_threshold: float = Field(default=.85, ge=.8, le=.99, allow_inf_nan=False)
+    max_tail_loss_pct: float = Field(default=15, ge=1, le=100, allow_inf_nan=False)
+    max_amihud_ratio: float = Field(default=3, ge=1, le=100, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_caps(self):
@@ -245,6 +248,12 @@ def evaluate(sources: dict, settings: dict, previous_holders: Optional[dict] = N
             break
 
     model = factor_diagnostics(data, cfg.model_dump())
+    base_score_raw = sum(x["points"] for x in factors)
+    pullback = [f for f in factors if f["code"] in ("drawdown", "rsi")]
+    if len(pullback) > 1:
+        factors = [f for f in factors if f not in pullback]
+        factors.append({"code": "pullback", "label": "回撤与 RSI 合并观察", "points": max(f["points"] for f in pullback),
+                        "components": pullback, "merge_reason": "structural", "value": None})
     base_score = sum(x["points"] for x in factors)
     base_weight = (100 - model["max_points"]) / 100
     for item in factors:
@@ -276,10 +285,13 @@ def evaluate(sources: dict, settings: dict, previous_holders: Optional[dict] = N
         status = "warming"
     return {"rule_version": RULE_VERSION, "status": status, "score": score, "risk_score": risk_score,
             "coverage": coverage, "factors": factors, "risks": risks, "blockers": sorted(set(blockers)),
-            "base_score": base_score, "factor_model": model,
+            "base_score": base_score, "base_score_raw": base_score_raw, "factor_model": model,
+            "score_ceiling": round(85*base_weight + model["effective_max_points"], 2),
             "holder_delta": holder_delta, "fresh_sources": fresh, "evaluated_at": now,
             "limitations": ["观察分不是上涨概率，规则尚未经过样本外收益验证。",
                             "地址不等于独立投资者，转账不等于买卖。",
                             "单次盘口不能证明刷量、对敲或虚假挂单。",
-                            "新增因子每组最多 5 分；缺失数据不重新分配权重。阈值未做参数优化或样本外验证。",
+                            "相关机会因子按簇内最高单项计分；省去的权重不补给其他项，理论上限会低于 100。风险与硬门槛不因相关性关闭。",
+                            "相关性只用同币种过去的日线，滚动窗口重叠，90 个日度样本不等于 90 个独立样本；不是横截面或显著性结论。",
+                            "新增指标尚未经过样本外收益验证，相关性合并不是收益优化。",
                             "新闻覆盖有限，未匹配报道不代表没有事件。"]}

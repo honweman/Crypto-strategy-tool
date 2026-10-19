@@ -53,7 +53,7 @@ class RulesTests(unittest.TestCase):
     def test_complete_observation_is_candidate_not_probability(self):
         output = self.evaluate()
         self.assertEqual(output["status"], "candidate")
-        self.assertEqual(output["score"], 100)
+        self.assertEqual(output["score"], 85)
         self.assertAlmostEqual(output["holder_delta"]["pct"], 2)
         self.assertTrue(output["limitations"])
 
@@ -173,7 +173,7 @@ class StoreApiTests(unittest.TestCase):
         self.store.update_settings(self.admin["id"], RadarSettings(enabled_factor_groups=[]).model_dump())
         after = self.store.signals(self.admin["id"])[0]
         self.assertEqual(after["evidence"], before["evidence"])
-        self.assertEqual(after["evidence"]["evaluation"]["rule_version"], "altcoin-observer-v2")
+        self.assertEqual(after["evidence"]["evaluation"]["rule_version"], "altcoin-observer-v3")
         self.assertEqual(len(after["evidence"]["settings"]["enabled_factor_groups"]), 4)
 
     def test_exclusive_claim_and_revised_config_discards_inflight_result(self):
@@ -184,6 +184,19 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(self.store.finish(job,self.payload(job)),(False,None))
         self.store.release(job)
         self.assertEqual(self.store.watch(job["id"],self.admin["id"])["next_due"],0)
+
+    def test_v2_signal_evidence_is_not_rewritten_by_v3_overview(self):
+        job = self.store.claim([self.admin["id"]])
+        payload = self.payload(job)
+        payload["evaluation"]["rule_version"] = "altcoin-observer-v2"
+        payload["evaluation"]["score"] = 100
+        self.store.finish(job, payload)
+        frozen = self.store.signals(self.admin["id"])[0]["evidence"]
+        overview = self.client.get("/api/radar").json()
+        watch = next(w for w in overview["watches"] if w["id"] == job["id"])
+        self.assertEqual(watch["snapshot"]["evaluation"]["rule_version"], "altcoin-observer-v3")
+        self.assertEqual(self.store.signals(self.admin["id"])[0]["evidence"], frozen)
+        self.assertEqual(frozen["evaluation"]["rule_version"], "altcoin-observer-v2")
 
     def test_lease_expiration_and_disabled_user_settings(self):
         now = time.time()
