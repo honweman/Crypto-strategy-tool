@@ -155,7 +155,7 @@ class RadarStore:
             conn.execute("UPDATE radar_watches SET lease_token=?, lease_until=?, last_started=? WHERE id=?",
                          (token, now + 240, now, row["id"]))
             job = self.public_watch(row)
-            job.update(lease_token=token, settings=json.loads(row["config"]))
+            job.update(lease_token=token, settings=RadarSettings(**json.loads(row["config"])).model_dump())
             return job
 
     def release(self, job: dict, error: Optional[str] = None):

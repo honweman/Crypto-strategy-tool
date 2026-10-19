@@ -1,7 +1,7 @@
 /* Research views are isolated from order entry and reset on every session change. */
 const radarState = { data: null, selected: null, signals: [], timer: null, generation: 0, pending: false, editId: null, userId: null };
 const radarRequests = new Set();
-const radarNames = { market: "市值与供给", spot: "现货盘口", derivatives: "合约持仓", holders: "大户地址", transfers: "链上转账", governance: "权限与多签", news: "新闻" };
+const radarNames = { market: "市值与供给", spot: "现货盘口", derivatives: "合约持仓", holders: "大户地址", transfers: "链上转账", governance: "权限与多签", news: "新闻", technicals: "日线与基准" };
 const radarStatuses = { candidate: "观察候选", avoid: "风险复核", observe: "继续观察", incomplete: "数据不全", warming: "积累样本", paused: "已暂停", waiting: "等待采集" };
 const radarBlocks = {
   asset_identity_unverified: "币种与合约身份未核验", market_cap_outside_range: "流通市值不在设定区间", insufficient_volume: "报告成交额不足",
@@ -11,6 +11,7 @@ const radarBlocks = {
   insufficient_coverage: "数据覆盖不足", score_below_threshold: "机会分未达门槛", risk_above_threshold: "风险分超限",
   watch_configuration_changed: "币种配置已修改，等待重新采集核验",
   supply_unavailable: "流通或总供给数据缺失",
+  factor_data_incomplete: "已启用因子的有效数据覆盖不足",
 };
 const radarFields = [
   ["interval_seconds", "更新间隔（秒）", 60, 86400, 1], ["min_market_cap", "最小流通市值（USD）", 0, 1e13, 1],
@@ -19,6 +20,12 @@ const radarFields = [
   ["min_score", "机会分门槛", 40, 100, 1], ["max_risk", "风险分上限", 0, 60, 1], ["min_coverage", "最低覆盖率（%）", 70, 100, 1],
   ["whale_transfer_usd", "大额转账门槛（USD）", 1000, 1e10, 1], ["fee_bps", "前瞻观察单边手续费（bps）", 0, 100, 0.1],
   ["slippage_bps", "前瞻观察单边滑点（bps）", 0, 500, 0.1],
+  ["min_factor_coverage", "最低因子覆盖率（%）", 70, 100, 1],
+  ["max_volatility_pct", "年化波动率上限（%）", 10, 1000, 1],
+  ["max_atr_pct", "ATR / 价格上限（%）", 0.1, 100, 0.1],
+  ["max_amihud_bps", "Amihud 上限（bps/百万USDT）", 0.01, 100000, 0.01],
+  ["max_basis_bps", "永续标记价偏离上限（bps）", 1, 5000, 1],
+  ["max_oi_volume_ratio", "OI / 现货成交额上限（倍）", 0.1, 1000, 0.1],
 ];
 const radarEl = (id) => document.getElementById(id);
 const radarEsc = (value) => escapeHtml(String(value ?? ""));
@@ -137,6 +144,7 @@ function renderRadarDetail(watch) {
     <section class="radar-evidence"><h3>数据来源与时效</h3>${Object.entries(radarNames).map(([key,label]) => { const source=sources[key] || {}; return `<div class="radar-source"><strong>${label}</strong><span>${e.fresh_sources[key] ? "有效" : source.status === "error" ? `不可用 · ${radarEsc(source.error)}` : "缺失或过期"}<br>${radarTime(source.observed_at)}</span>${radarLink(source.url,"原始来源")}</div>`; }).join("")}<p class="radar-note">${radarEsc(e.rule_version)} · ${radarTime(e.evaluated_at)}</p></section></div>
     <div class="radar-two"><section class="radar-evidence"><h3>机会分 ${e.score} / 100</h3>${list(e.factors.map(f => `+${f.points} · ${radarEsc(f.label)}`),"暂无符合条件的正向因子")}</section>
     <section class="radar-evidence"><h3>风险分 ${e.risk_score} / 100</h3>${list(e.risks.map(r => `+${r.points} · ${radarEsc(r.label)}`),"已覆盖数据中未触发规则，不代表没有风险")}${list(e.blockers.map(b => radarEsc(radarBlock(b))),"已达到规则观察门槛，仍须人工复核")}</section></div>
+    ${renderRadarFactors(e.factor_model, sources)}
     <div class="radar-two"><section class="radar-evidence"><h3>大户持仓与转账</h3><p class="radar-note">${e.holder_delta ? `共同 ${e.holder_delta.addresses} 个地址 · ${radarNum(e.holder_delta.window_seconds/3600,1)} 小时余额变化 ${radarPct(e.holder_delta.pct)}` : "尚无可比较的大户历史样本"}<br>前十地址占比 ${h.top10_share == null ? "—" : radarNum(h.top10_share*100) + "%"} · 样本 ${radarNum(h.sample_size,0)} 个地址</p>
       ${list((t.items || []).filter(x => Number(x.value_usd) >= radarState.data.settings.whale_transfer_usd && Date.now()/1000 - x.timestamp <= 86400).slice(0,8).map(x => `${radarLink(x.url,`${x.from_label || x.from.slice(0,8)} → ${x.to_label || x.to.slice(0,8)}`)} · 约 $${radarNum(x.value_usd,0)} · ${radarTime(x.timestamp)}`),"最近一页样本中暂无符合门槛的大额转账，或数据不可用")}
       <p class="radar-note">地址不等于独立投资者，余额增加或转入交易所不等于买入或卖出。转账仅最近一页，不是完整净流量。</p></section>
@@ -152,9 +160,24 @@ function renderRadarDetail(watch) {
     try {
       const result = await radarRead(`/api/radar/watches/${watch.id}/history`);
       if (generation !== radarState.generation || selected !== radarState.selected) return;
-      radarEl("radar-history-list").innerHTML = `<table><thead><tr><th>时间</th><th>状态</th><th>机会 / 风险</th><th>覆盖</th></tr></thead><tbody>${result.items.map(x => `<tr><td>${radarTime(x.created_at)}</td><td>${radarBadge(x.evaluation.status)}</td><td>${x.evaluation.score} / ${x.evaluation.risk_score}</td><td>${x.evaluation.coverage}%</td></tr>`).join("")}</tbody></table>`;
+      radarEl("radar-history-list").innerHTML = `<table><thead><tr><th>时间</th><th>规则版本</th><th>状态</th><th>机会 / 风险</th><th>覆盖</th></tr></thead><tbody>${result.items.map(x => `<tr><td>${radarTime(x.created_at)}</td><td>${radarEsc(x.evaluation.rule_version)}</td><td>${radarBadge(x.evaluation.status)}</td><td>${x.evaluation.score} / ${x.evaluation.risk_score}</td><td>${x.evaluation.coverage}%</td></tr>`).join("")}</tbody></table>`;
     } catch(error) { toast(radarError(error)); }
   };
+}
+function renderRadarFactors(model, sources) {
+  if (!model) return "";
+  const groups = radarState.data.factor_groups || {};
+  const checks = Object.fromEntries(model.groups.flatMap(group => group.checks.map(check => [check.key, check])));
+  const selected = new Set(model.groups.map(group => group.id));
+  const stateLabel = {missing: "缺失", passed: "达标", not_met: "未达标"};
+  return `<section class="radar-evidence radar-factor-section"><h3>选币因子 · ${model.points} / ${model.max_points} 分</h3>
+    <p class="radar-note">有效评分数据 ${model.coverage}% · 日线截至 ${radarTime(model.as_of)}<br>日线因子每日更新；每组上限 5 分，缺失值不补分。基础观察规则占 ${100-model.max_points} 分。规则未经过样本外收益验证。</p>
+    <div class="radar-factor-groups">${Object.entries(groups).map(([key,label]) => { const group=model.groups.find(g => g.id===key); return `<span>${radarEsc(label)} <strong>${group ? group.points + " / 5" : "不评分"}</strong></span>`; }).join("")}</div>
+    <div class="table-wrap"><table class="radar-factor-table"><thead><tr><th>因子</th><th>数值</th><th>评分条件</th><th>结果 / 分数</th><th>口径与来源</th></tr></thead><tbody>${model.metrics.map(metric => {
+      const check=checks[metric.key], source=sources[metric.source] || {};
+      return `<tr><td>${radarEsc(metric.label)}<small>${radarEsc(groups[metric.group])}</small></td><td>${radarNum(metric.value,3)} ${metric.value == null ? "" : radarEsc(metric.unit)}</td><td>${check ? radarEsc(check.condition) : "不单独加分"}</td><td>${check ? `${stateLabel[check.status]} · ${check.points}/${check.max_points}` : selected.has(metric.group) ? "背景指标" : "组已关闭"}</td><td>${radarEsc(metric.interpretation)}<small>${radarEsc(radarNames[metric.source])} · ${radarTime(source.observed_at)}${metric.key === "oi_to_spot_volume" ? `<br>现货成交额 · ${radarTime(sources.spot?.observed_at)}` : ""}</small></td></tr>`;
+    }).join("")}</tbody></table></div>
+    <details><summary>尚未接入的因子</summary><ul>${(radarState.data.deferred_factors || []).map(x => `<li>${radarEsc(x.name)}：${radarEsc(x.requirement)}。不参与评分。</li>`).join("")}</ul></details></section>`;
 }
 function drawRadarChart(points) {
   const canvas = radarEl("radar-price-chart");
@@ -178,6 +201,7 @@ async function loadRadarConfig() {
   if (generation !== radarState.generation) return;
   radarState.data = data;
   radarEl("radar-settings-fields").innerHTML = `<label class="checkbox-row"><input name="enabled" type="checkbox" ${data.settings.enabled ? "checked" : ""} />后台自动观察</label><label class="checkbox-row"><input name="notifications_enabled" type="checkbox" ${data.settings.notifications_enabled ? "checked" : ""} />候选与风险通知</label>${radarFields.map(([name,label,min,max,step]) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${data.settings[name]}" required /></label>`).join("")}`;
+  radarEl("radar-settings-fields").insertAdjacentHTML("beforeend", `<fieldset class="radar-factor-options"><legend>参与评分的因子组</legend>${Object.entries(data.factor_groups).map(([key,label]) => `<label class="checkbox-row"><input name="factor_group" type="checkbox" value="${radarEsc(key)}" ${data.settings.enabled_factor_groups.includes(key) ? "checked" : ""} />${radarEsc(label)}</label>`).join("")}</fieldset>`);
   radarEl("radar-config-list").innerHTML = `<table><thead><tr><th>币种</th><th>链</th><th>状态</th><th>操作</th></tr></thead><tbody>${data.watches.map(w => `<tr><td>${radarEsc(w.asset.symbol)}</td><td>${radarEsc(w.asset.chain)}</td><td>${w.enabled ? "启用" : "暂停"}</td><td><div class="button-row"><button class="secondary" data-edit="${w.id}" type="button">编辑</button><button class="secondary" data-toggle="${w.id}" type="button">${w.enabled ? "暂停" : "启用"}</button><button class="danger" data-delete="${w.id}" type="button">删除</button></div></td></tr>`).join("")}</tbody></table>`;
   radarEl("radar-config-list").querySelectorAll("[data-edit]").forEach(b => b.onclick = () => editRadarAsset(data.watches.find(w => w.id === Number(b.dataset.edit))));
   radarEl("radar-config-list").querySelectorAll("[data-toggle]").forEach(b => b.onclick = () => radarAction(b, async () => {
@@ -241,6 +265,7 @@ radarEl("radar-settings-form").onsubmit=event => {
   event.preventDefault();
   const form=event.currentTarget, config={enabled:form.elements.enabled.checked,notifications_enabled:form.elements.notifications_enabled.checked};
   radarFields.forEach(([name]) => { config[name]=Number(form.elements[name].value); });
+  config.enabled_factor_groups = Array.from(form.querySelectorAll('input[name="factor_group"]:checked'), input => input.value);
   radarAction(form.querySelector("button[type=submit]"),async () => { await api("/api/radar/settings",{method:"PUT",body:JSON.stringify(config)}); radarEl("radar-config-result").textContent="配置已保存，后台按新参数更新。"; await loadRadarConfig(); });
 };
 radarEl("radar-asset-form").onsubmit=event => {

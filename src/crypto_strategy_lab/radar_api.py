@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Query
 
 from .permissions import MANAGE_RADAR, VIEW_RADAR
 from .radar import RULE_VERSION, SOURCE_TTLS, RadarAsset, RadarSettings, evaluate
+from .radar_factors import DEFERRED_FACTORS, GROUPS
 
 
 def register_radar_routes(app, service, require):
@@ -42,6 +43,7 @@ def register_radar_routes(app, service, require):
         settings = store.settings(user["id"])
         return {"settings": settings, "worker": service.status(), "rule_version": RULE_VERSION,
                 "server_time": time.time(), "source_ttls": SOURCE_TTLS,
+                "factor_groups": GROUPS, "deferred_factors": DEFERRED_FACTORS,
                 "watches": [{**w, "snapshot": snapshot(w, settings)} for w in store.watches(user["id"])]}
 
     @app.get("/api/radar/settings")

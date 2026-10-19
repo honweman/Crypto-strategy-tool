@@ -49,11 +49,27 @@
 .radar-section details { margin-top: 14px; font-size: 13px; }
 .radar-section summary { cursor: pointer; }
 .radar-section .table-wrap { overscroll-behavior-x: contain; }
+.radar-factor-section { margin-top: 24px; }
+.radar-factor-groups { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 16px 0; font-size: 13px; }
+.radar-factor-groups strong { margin-left: 8px; }
+.radar-factor-table td:last-child { white-space: normal; min-width: 240px; line-height: 1.6; }
+.radar-factor-options { grid-column: 1 / -1; border: 0; padding: 12px 0 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 16px; }
+.radar-factor-options legend { font-size: 14px; font-weight: 600; }
+#radar-config-section .subhead { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin: 24px 0 12px; }
 @media (max-width: 800px) {
   .radar-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .radar-two { grid-template-columns: minmax(0,1fr); gap: 18px; }
   .radar-label-row { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .radar-label-row label:first-child { grid-column: 1 / -1; }
+  .radar-section .radar-factor-table { min-width: 0; display: block; }
+  .radar-factor-table thead { display: none; }
+  .radar-factor-table tbody { display: block; }
+  .radar-factor-table tr { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .radar-section .radar-factor-table td { white-space: normal; overflow-wrap: anywhere; min-width: 0; border: 0; padding: 6px 8px; line-height: 1.6; }
+  .radar-factor-table td:nth-child(2),.radar-factor-table td:nth-child(4) { text-align: right; }
+  .radar-factor-table td:nth-child(2) { font-weight: 600; }
+  .radar-factor-table td:nth-child(3)::before { content: "条件："; color: var(--muted); }
+  .radar-factor-table td:last-child { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
 }
 @media (max-width: 480px) {
   .status-band { grid-template-columns: 90px minmax(0,1fr); }
@@ -64,6 +80,7 @@
   .radar-metric:nth-child(2) { border-right: 0; }
   .radar-metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .radar-fields { grid-template-columns: minmax(0,1fr); }
+  .radar-factor-options { grid-template-columns: minmax(0,1fr); }
   .radar-wide { grid-column: auto; }
   .radar-source { grid-template-columns: 90px minmax(0,1fr); }
   .radar-source a { grid-column: 2; }

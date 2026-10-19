@@ -22,10 +22,14 @@ def evidence(now=None):
     now = now or time.time()
     sources = {key: {"status": "ok", "observed_at": now, "data": {}} for key in SOURCE_TTLS}
     sources["market"]["data"] = {"identity_verified": True, "price": 1, "market_cap": 20_000_000,
-        "volume_24h": 5_000_000, "float_ratio": .8, "change_24h_pct": 2, "change_7d_pct": -15}
+        "volume_24h": 5_000_000, "fdv": 25_000_000, "float_ratio": .8, "change_24h_pct": 2, "change_7d_pct": -15}
     sources["spot"]["data"] = {"price": 1, "ask": 1.001, "bid": .999, "drawdown_30d_pct": -35,
-                               "rsi14": 35, "depth_1pct_usdt": 30000, "spread_bps": 20}
-    sources["derivatives"]["data"] = {"funding_bps": 1, "oi_change_24h_pct": 3}
+                               "rsi14": 35, "depth_1pct_usdt": 30000, "spread_bps": 20, "quote_volume_24h": 1_000_000}
+    sources["derivatives"]["data"] = {"funding_bps": 1, "oi_change_24h_pct": 3, "basis_bps": 10, "open_interest_usdt": 2_000_000}
+    sources["technicals"]["data"] = {"as_of": now-3600, "rs_btc_7d_pct": 2, "rs_btc_30d_pct": 3,
+        "rs_eth_7d_pct": 1, "sma20_slope_5d_pct": 1, "volume_ratio_7_30": 1.5, "taker_buy_share_7d_pct": 55,
+        "amihud_30d_bps": 50, "volatility_30d_pct": 100, "atr14_pct": 5, "max_drawdown_90d_pct": -40,
+        "btc_sma60_distance_pct": 5, "btc_return_7d_pct": 2, "beta_btc_30d": 1.2}
     sources["governance"]["data"] = {"control_verified": True, "owner_kind": "multisig", "safes": [{"threshold": 2}], "events": []}
     sources["holders"]["data"] = {"holders": [{"address": "0x%040x" % i, "balance": "102"} for i in range(1,16)], "top10_share": .2}
     sources["news"]["data"] = {"items": []}
@@ -147,6 +151,31 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/radar/watches",json=DEFAULT_ASSETS[0]).status_code,409)
         self.assertEqual(self.client.post("/api/radar/refresh").status_code,503)
 
+    def test_factor_config_is_user_scoped_and_validated(self):
+        config = RadarSettings(enabled_factor_groups=["momentum"], max_atr_pct=7).model_dump()
+        response = self.client.put("/api/radar/settings", json=config)
+        self.assertEqual(response.status_code, 200)
+        overview = self.client.get("/api/radar").json()
+        self.assertEqual(overview["settings"]["enabled_factor_groups"], ["momentum"])
+        self.assertEqual(len(overview["factor_groups"]), 4)
+        self.assertTrue(overview["deferred_factors"])
+        self.assertEqual(len(self.store.settings(self.other["id"])["enabled_factor_groups"]), 4)
+        for bad in (["flow", "flow"], ["unknown"]):
+            self.assertEqual(self.client.put("/api/radar/settings", json={"enabled_factor_groups": bad}).status_code, 422)
+
+    def test_legacy_settings_default_and_signal_parameters_are_frozen(self):
+        with self.db.connect() as c:
+            c.execute("UPDATE radar_settings SET config=? WHERE user_id=?", (json.dumps({"enabled": True}), self.admin["id"]))
+        job = self.store.claim([self.admin["id"]])
+        self.assertEqual(len(job["settings"]["enabled_factor_groups"]), 4)
+        self.store.finish(job, self.payload(job))
+        before = self.store.signals(self.admin["id"])[0]
+        self.store.update_settings(self.admin["id"], RadarSettings(enabled_factor_groups=[]).model_dump())
+        after = self.store.signals(self.admin["id"])[0]
+        self.assertEqual(after["evidence"], before["evidence"])
+        self.assertEqual(after["evidence"]["evaluation"]["rule_version"], "altcoin-observer-v2")
+        self.assertEqual(len(after["evidence"]["settings"]["enabled_factor_groups"]), 4)
+
     def test_exclusive_claim_and_revised_config_discards_inflight_result(self):
         job = self.store.claim([self.admin["id"]])
         second = self.store.claim([self.admin["id"]])
@@ -256,7 +285,7 @@ class SourcesTests(unittest.IsolatedAsyncioTestCase):
     async def test_errors_preserve_old_timestamp_but_disable_score(self):
         data=PublicData()
         sources,_=evidence()
-        for method in ("market","spot","holders","transfers","derivatives","governance","news"):
+        for method in ("market","spot","holders","transfers","derivatives","governance","news","technicals"):
             setattr(data,method,AsyncMock(side_effect=DataUnavailable("http_429")))
         try:
             actual=await data.collect(DEFAULT_ASSETS[0],{"sources":sources})

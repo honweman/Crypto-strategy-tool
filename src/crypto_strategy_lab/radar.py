@@ -7,9 +7,11 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-RULE_VERSION = "altcoin-observer-v1"
+from .radar_factors import GROUPS, factor_diagnostics
+
+RULE_VERSION = "altcoin-observer-v2"
 SOURCE_TTLS = {"market": 900, "spot": 300, "derivatives": 7200,
-               "holders": 1800, "transfers": 1800, "governance": 7200, "news": 1800}
+               "holders": 1800, "transfers": 1800, "governance": 7200, "news": 1800, "technicals": 3600}
 CRITICAL_SOURCES = {"market", "spot", "holders", "transfers", "governance"}
 
 
@@ -59,11 +61,21 @@ class RadarSettings(BaseModel):
     notifications_enabled: bool = True
     fee_bps: float = Field(default=10, ge=0, le=100, allow_inf_nan=False)
     slippage_bps: float = Field(default=10, ge=0, le=500, allow_inf_nan=False)
+    enabled_factor_groups: list[Literal["momentum", "flow", "volatility", "regime"]] = Field(
+        default_factory=lambda: list(GROUPS), max_length=4)
+    min_factor_coverage: int = Field(default=80, ge=70, le=100)
+    max_volatility_pct: float = Field(default=150, ge=10, le=1000, allow_inf_nan=False)
+    max_atr_pct: float = Field(default=10, ge=0.1, le=100, allow_inf_nan=False)
+    max_amihud_bps: float = Field(default=100, ge=0.01, le=100000, allow_inf_nan=False)
+    max_basis_bps: float = Field(default=100, ge=1, le=5000, allow_inf_nan=False)
+    max_oi_volume_ratio: float = Field(default=5, ge=0.1, le=1000, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_caps(self):
         if self.min_market_cap >= self.max_market_cap:
             raise ValueError("最小市值必须小于最大市值")
+        if len(set(self.enabled_factor_groups)) != len(self.enabled_factor_groups):
+            raise ValueError("因子组不能重复")
         return self
 
 
@@ -232,8 +244,19 @@ def evaluate(sources: dict, settings: dict, previous_holders: Optional[dict] = N
             blockers.append("news_requires_review")
             break
 
-    coverage = round(sum(fresh.values()) / len(fresh) * 100)
-    score = min(100, sum(x["points"] for x in factors))
+    model = factor_diagnostics(data, cfg.model_dump())
+    base_score = sum(x["points"] for x in factors)
+    base_weight = (100 - model["max_points"]) / 100
+    for item in factors:
+        item["points"] = round(item["points"] * base_weight, 2)
+    for group in model["groups"]:
+        if group["points"]:
+            factor("group_" + group["id"], group["label"], group["points"])
+    risks.extend(model["risks"])
+    blockers.extend(model["blockers"])
+    required = [key for key in fresh if key != "technicals" or cfg.enabled_factor_groups]
+    coverage = round(sum(fresh[key] for key in required) / len(required) * 100)
+    score = round(min(100, base_score * base_weight + model["points"]), 2)
     risk_score = min(100, sum(x["points"] for x in risks))
     if coverage < cfg.min_coverage:
         blockers.append("insufficient_coverage")
@@ -247,12 +270,16 @@ def evaluate(sources: dict, settings: dict, previous_holders: Optional[dict] = N
     elif risk_score > cfg.max_risk or any(x in blockers for x in (
             "token_paused", "recent_authority_change_review", "news_requires_review", "price_divergence")):
         status = "avoid"
+    elif "factor_data_incomplete" in blockers:
+        status = "incomplete"
     elif "holder_baseline_warming" in blockers:
         status = "warming"
     return {"rule_version": RULE_VERSION, "status": status, "score": score, "risk_score": risk_score,
             "coverage": coverage, "factors": factors, "risks": risks, "blockers": sorted(set(blockers)),
+            "base_score": base_score, "factor_model": model,
             "holder_delta": holder_delta, "fresh_sources": fresh, "evaluated_at": now,
             "limitations": ["观察分不是上涨概率，规则尚未经过样本外收益验证。",
                             "地址不等于独立投资者，转账不等于买卖。",
                             "单次盘口不能证明刷量、对敲或虚假挂单。",
+                            "新增因子每组最多 5 分；缺失数据不重新分配权重。阈值未做参数优化或样本外验证。",
                             "新闻覆盖有限，未匹配报道不代表没有事件。"]}

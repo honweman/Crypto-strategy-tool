@@ -19,6 +19,7 @@ from eth_abi.exceptions import DecodingError
 from eth_utils import keccak
 
 from .radar import number, source_fresh
+from .radar_factors import calculate_technicals, closed_daily_bars
 
 CHAINS = {
     "ethereum": {"explorer": "https://eth.blockscout.com", "rpc": "https://ethereum-rpc.publicnode.com",
@@ -161,7 +162,7 @@ class PublicData:
         ticker, depth, candles = await asyncio.gather(
             self.fetch(base + "/api/v3/ticker/24hr", {"symbol": symbol}, ttl=60),
             self.fetch(base + "/api/v3/depth", {"symbol": symbol, "limit": 100}, ttl=30),
-            self.fetch(base + "/api/v3/klines", {"symbol": symbol, "interval": "1d", "limit": 32}, ttl=300))
+            self.fetch(base + "/api/v3/klines", {"symbol": symbol, "interval": "1d", "limit": 120}, ttl=300))
         if ticker.get("symbol") != symbol:
             raise DataUnavailable("spot_symbol_mismatch")
         bids, asks = depth.get("bids", []), depth.get("asks", [])
@@ -186,10 +187,27 @@ class PublicData:
         return result("Binance Spot", "https://www.binance.com/en/trade/" + asset["symbol"] + "_USDT",
                       timestamp(ticker["closeTime"]), {"symbol": symbol, "price": positive(ticker["lastPrice"], "last"),
                       "bid": bid, "ask": ask, "spread_bps": (ask - bid) / mid * 10000,
+                      "quote_volume_24h": positive(ticker.get("quoteVolume"), "quote_volume", True),
                       "depth_1pct_usdt": min(bid_depth, ask_depth), "bid_depth_usdt": bid_depth, "ask_depth_usdt": ask_depth,
                       "rsi14": rsi, "drawdown_30d_pct": (mid / high - 1) * 100,
                       "daily_closes": [{"at": x[6] / 1000, "price": float(x[4])} for x in closed[-30:]]},
                       ["深度为前 100 档中的 1% 区间下界；单次快照无法识别虚假挂单。", "USDT 报价未做美元脱锚调整。"])
+
+    async def technicals(self, asset: dict) -> dict:
+        url = "https://api.binance.com/api/v3/klines"
+        params = [{"symbol": symbol, "interval": "1d", "limit": 120}
+                  for symbol in (asset["exchange_symbol"], "BTCUSDT", "ETHUSDT")]
+        raw = await asyncio.gather(*(self.fetch(url, p, ttl=300) for p in params))
+        now = time.time()
+        try:
+            data = calculate_technicals(*(closed_daily_bars(rows, now) for rows in raw))
+        except ValueError as exc:
+            raise DataUnavailable(str(exc)) from None
+        return result("Binance Spot / UTC daily", "https://www.binance.com/en/trade/" + asset["symbol"] + "_USDT",
+                      min(self.fetched_at(url, p) for p in params), data,
+                      ["仅已收盘 UTC 日线；日线因子每日变化，盘口与合约数据按采集周期刷新。",
+                       "仅 Binance USDT 市场；主动买入占比不是净流入，成交量未剔除刷量。",
+                       "BTC/ETH 使用同日窗口，USDT 报价未做美元脱锚调整。"])
 
     async def derivatives(self, asset: dict) -> dict:
         base, symbol = "https://fapi.binance.com", asset["exchange_symbol"]
@@ -209,10 +227,12 @@ class PublicData:
         if len(funding) >= 2:
             intervals = (int(funding[-1]["fundingTime"]) - int(funding[-2]["fundingTime"])) / 3600000
         observed = min(timestamp(oi["time"]), timestamp(premium["time"]), timestamp(history[-1]["timestamp"]))
+        index_price = number(premium.get("indexPrice"))
         return result("Binance USD-M", "https://www.binance.com/en/futures/" + symbol, observed, {
             "open_interest": positive(oi["openInterest"], "open_interest", True),
             "open_interest_usdt": positive(oi["openInterest"], "open_interest", True) * positive(premium["markPrice"], "mark_price"),
             "oi_change_24h_pct": (after / before - 1) * 100,
+            "basis_bps": (positive(premium["markPrice"], "mark_price") / index_price - 1) * 10000 if index_price and index_price > 0 else None,
             "funding_bps": number(premium.get("lastFundingRate")) * 10000 if number(premium.get("lastFundingRate")) is not None else None,
             "observed_funding_interval_hours": intervals, "next_funding_at": timestamp(premium["nextFundingTime"]),
         }, ["仅覆盖 Binance USD-M，不代表全市场持仓。资金费为本期费率，不假定固定 8 小时。"])
@@ -433,7 +453,8 @@ class PublicData:
                              "observed_at": old.get("observed_at"), "collected_at": time.time(), "data": old.get("data", {})}
         pairs = await asyncio.gather(*(guarded(k, fn(asset)) for k, fn in [
             ("market", self.market), ("spot", self.spot), ("derivatives", self.derivatives),
-            ("holders", self.holders), ("governance", self.governance), ("news", self.news)]))
+            ("holders", self.holders), ("governance", self.governance), ("news", self.news),
+            ("technicals", self.technicals)]))
         sources = dict(pairs)
         key, source = await guarded("transfers", self.transfers(asset, sources["market"]))
         sources[key] = source
