@@ -56,7 +56,7 @@ crypto-lab-web --host 127.0.0.1 --port 8092
 
 API Key 会使用 `CRYPTO_LAB_SECRET_KEY` 派生出的密钥加密后存入 SQLite。部署给其他人使用时必须更换默认管理员密码，使用 HTTPS，并把 `CRYPTO_LAB_SECRET_KEY` 放到服务器密钥管理或环境变量中。
 
-手机临时访问可以用 quick tunnel：
+手机临时访问可以用 quick tunnel。先按 [部署说明](docs/deployment.md) 修改默认密码并准备私密运行配置，再启动：
 
 ```bash
 ./scripts/start_public_demo.sh

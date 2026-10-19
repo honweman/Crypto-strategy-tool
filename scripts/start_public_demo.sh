@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST="${CRYPTO_LAB_HOST:-0.0.0.0}"
-PORT="${CRYPTO_LAB_PORT:-8092}"
-CLOUDFLARED="${CLOUDFLARED:-/private/tmp/crypto-tunnel/cloudflared}"
+PORT="${CRYPTO_LAB_PORT:-8093}"
+CLOUDFLARED="${CLOUDFLARED:-$(command -v cloudflared || true)}"
+CONFIG="${CRYPTO_LAB_PUBLIC_CONFIG:-$ROOT_DIR/output/public-runtime.json}"
 
 if [[ ! -x "$CLOUDFLARED" ]]; then
   echo "cloudflared not found or not executable: $CLOUDFLARED" >&2
@@ -13,7 +13,10 @@ fi
 
 cd "$ROOT_DIR"
 
-export CRYPTO_LAB_SECRET_KEY="${CRYPTO_LAB_SECRET_KEY:-local-dev-secret}"
+if [[ ! -f "$CONFIG" ]]; then
+  echo "Private public-runtime config missing. See docs/deployment.md." >&2
+  exit 1
+fi
 
 cleanup() {
   if [[ -n "${WEB_PID:-}" ]]; then
@@ -25,13 +28,31 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Starting Crypto Strategy Lab on http://${HOST}:${PORT}"
-.venv/bin/crypto-lab-web --host "$HOST" --port "$PORT" &
+echo "Starting secured temporary demo on http://127.0.0.1:${PORT}"
+.venv/bin/python -m crypto_strategy_lab.public_server --config "$CONFIG" --port "$PORT" &
 WEB_PID=$!
 
-sleep 2
+READY=0
+for ((i=0; i<30; i++)); do
+  sleep 1
+  if ! kill -0 "$WEB_PID" 2>/dev/null; then
+    echo "Secure server failed; tunnel will not start." >&2
+    exit 1
+  fi
+  if curl --max-time 2 -fsS -D - -o /dev/null "http://127.0.0.1:${PORT}/api/health" | rg -qi '^x-crypto-public-mode: secured-demo'; then
+    READY=1
+    break
+  fi
+done
+if [[ "$READY" != 1 ]]; then
+  echo "Secure server readiness check failed; tunnel will not start." >&2
+  exit 1
+fi
 echo "Starting Cloudflare quick tunnel to http://127.0.0.1:${PORT}"
-"$CLOUDFLARED" tunnel --url "http://127.0.0.1:${PORT}" &
+"$CLOUDFLARED" tunnel --no-autoupdate --url "http://127.0.0.1:${PORT}" &
 TUNNEL_PID=$!
 
-wait "$WEB_PID" "$TUNNEL_PID"
+while kill -0 "$WEB_PID" 2>/dev/null && kill -0 "$TUNNEL_PID" 2>/dev/null; do
+  sleep 2
+done
+exit 1
