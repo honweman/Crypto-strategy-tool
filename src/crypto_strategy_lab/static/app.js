@@ -172,7 +172,7 @@ function setActivePage(page = state.activePage) {
   if (state.user) {
     const cached = state.loadedPages[nextPage];
     loadPageData(nextPage).catch((error) => toast(error.message));
-    if (cached && nextPage === "status") loadRadar();
+    if (cached && nextPage === "status") { loadRadar(); loadDiscovery(); }
     if (cached && nextPage === "trades") loadRadarSignals();
   }
 }
@@ -332,6 +332,7 @@ async function loadPageData(page, options = {}) {
   const loaders = {
     status: [
       () => loadRadar(),
+      () => loadDiscovery(),
       () => loadMonitoring({ includeTradeRecords: false }),
       () => loadPaperTrading(),
       () => loadStrategyConfigs(),
@@ -347,6 +348,7 @@ async function loadPageData(page, options = {}) {
     ],
     config: [
       () => loadRadarConfig(),
+      () => loadDiscoveryConfig(),
       () => loadDataSources(),
       () => loadMarketQuoteSources(),
       () => loadIndicatorCatalog(),

@@ -56,6 +56,11 @@
 .radar-factor-options { grid-column: 1 / -1; border: 0; padding: 12px 0 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 16px; }
 .radar-factor-options legend { font-size: 14px; font-weight: 600; }
 #radar-config-section .subhead { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin: 24px 0 12px; }
+.radar-toolbar .discovery-search { width: 250px; }
+.discovery-pagination { display: flex; gap: 16px; justify-content: flex-end; align-items: center; flex-wrap: wrap; margin: 16px 0; font-size: 13px; }
+#discovery-summary strong { font-size: 18px; overflow-wrap: anywhere; }
+.discovery-table td:first-child small { max-width: 200px; white-space: normal; overflow-wrap: anywhere; }
+.discovery-table td:nth-child(7) small { max-width: 180px; white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 800px) {
   .radar-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .radar-two { grid-template-columns: minmax(0,1fr); gap: 18px; }
@@ -70,6 +75,14 @@
   .radar-factor-table td:nth-child(2) { font-weight: 600; }
   .radar-factor-table td:nth-child(3)::before { content: "条件："; color: var(--muted); }
   .radar-factor-table td:last-child { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+  .radar-section .discovery-table { display: block; min-width: 0; }
+  .discovery-table thead { display: none; }
+  .discovery-table tbody { display: block; }
+  .discovery-table tr { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .radar-section .discovery-table td { min-width: 0; white-space: normal; overflow-wrap: anywhere; padding: 8px; border: 0; }
+  .discovery-table td:first-child,.discovery-table td:nth-child(6) { grid-column: 1 / -1; }
+  .discovery-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .discovery-table td:last-child { align-self: end; text-align: right; }
 }
 @media (max-width: 480px) {
   .status-band { grid-template-columns: 90px minmax(0,1fr); }

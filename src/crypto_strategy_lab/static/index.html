@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crypto Strategy Lab</title>
-    <link rel="stylesheet" href="/static/app.css?v=21" />
-    <link rel="stylesheet" href="/static/radar.css?v=21" />
+    <link rel="stylesheet" href="/static/app.css?v=22" />
+    <link rel="stylesheet" href="/static/radar.css?v=22" />
   </head>
   <body>
     <main id="login-view" class="login-shell" hidden>
@@ -56,6 +56,18 @@
               <summary>账户权限</summary>
               <div id="current-permissions" class="chip-list"></div>
             </details>
+          </section>
+
+          <section id="discovery-section" class="radar-section" hidden>
+            <div class="section-head"><div><p class="eyebrow">Market Universe</p><h2>低市值币种扫描</h2></div><button id="discovery-refresh" type="button">立即扫描</button></div>
+            <p id="discovery-status" class="radar-note" role="status">等待扫描状态</p>
+            <div id="discovery-error" class="error-line" role="alert"></div>
+            <div id="discovery-summary" class="radar-metrics"></div>
+            <div class="radar-toolbar"><label class="discovery-search">币种搜索<input id="discovery-search" type="search" placeholder="代号或项目名称" /></label><label>排序<select id="discovery-sort"><option value="cap">市值从低到高</option><option value="volume">成交额从高到低</option><option value="change">24h 涨幅从高到低</option></select></label></div>
+            <div id="discovery-table" class="table-wrap" tabindex="0" aria-label="低市值筛选结果"></div>
+            <div class="discovery-pagination"><button id="discovery-prev" class="secondary" type="button">上一页</button><span id="discovery-page" role="status"></span><button id="discovery-next" class="secondary" type="button">下一页</button></div>
+            <div id="discovery-evidence"></div>
+            <p class="radar-note">筛选命中不是建仓信号。流通市值以 USD 计价，不按币价高低判断；交易所代码匹配不等于链上合约身份核验。</p>
           </section>
 
           <section id="radar-section" class="radar-section" hidden>
@@ -222,6 +234,11 @@
         </section>
 
         <section id="config-page" class="page" data-page="config" hidden>
+          <section id="discovery-config-section" class="radar-section" hidden>
+            <div class="section-head"><h2>自动扫描配置</h2></div>
+            <form id="discovery-settings-form"><fieldset id="discovery-settings-fields" class="radar-fields"></fieldset><button type="submit">保存扫描配置</button></form>
+            <p id="discovery-config-result" class="radar-note" role="status"></p>
+          </section>
           <section id="radar-config-section" class="radar-section" hidden>
             <div class="section-head"><div><p class="eyebrow">Observer Settings</p><h2>建仓观察配置</h2></div></div>
             <form id="radar-settings-form"><fieldset id="radar-settings-fields" class="radar-fields"></fieldset><button type="submit">保存观察配置</button></form>
@@ -696,7 +713,8 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/radar.js?v=21"></script>
-    <script src="/static/app.js?v=21"></script>
+    <script src="/static/radar.js?v=22"></script>
+    <script src="/static/discovery.js?v=22"></script>
+    <script src="/static/app.js?v=22"></script>
   </body>
 </html>

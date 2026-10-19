@@ -8,6 +8,8 @@ from fastapi import Depends, HTTPException, Query
 from .permissions import MANAGE_RADAR, VIEW_RADAR
 from .radar import RULE_VERSION, SOURCE_TTLS, RadarAsset, RadarSettings, evaluate
 from .radar_factors import DEFERRED_FACTORS, GROUPS
+from .radar_discovery import DiscoverySettings
+from .radar_sources import DataUnavailable
 
 
 def register_radar_routes(app, service, require):
@@ -49,6 +51,59 @@ def register_radar_routes(app, service, require):
     @app.get("/api/radar/settings")
     def settings(user=Depends(read)):
         return store.settings(user["id"])
+
+    @app.get("/api/radar/discovery")
+    def discovery(user=Depends(read)):
+        result = service.discovery.view(user["id"])
+        result["worker_running"] = bool(service.discovery_task and not service.discovery_task.done())
+        return result
+
+    @app.put("/api/radar/discovery/settings")
+    def discovery_settings(payload: DiscoverySettings, user=Depends(write), reader=Depends(read)):
+        value = service.discovery.update_settings(user["id"], payload.model_dump())
+        audit(user, "discovery.settings")
+        return value
+
+    @app.post("/api/radar/discovery/refresh", status_code=202)
+    def discovery_refresh(user=Depends(write), reader=Depends(read)):
+        if not service.discovery.settings(user["id"])["enabled"]:
+            raise HTTPException(409, "请先启用自动扫描")
+        if not service.discovery_task or service.discovery_task.done():
+            raise HTTPException(503, "后台扫描服务未运行")
+        queued = service.discovery.refresh()
+        audit(user, "discovery.refresh")
+        return {"queued": queued, "message": "已加入扫描队列" if queued else "正在扫描或处于 60 秒冷却期"}
+
+    @app.post("/api/radar/discovery/prepare/{coin_id}")
+    async def discovery_prepare(coin_id: str, user=Depends(write), reader=Depends(read)):
+        selected = next((row for row in service.discovery.view(user["id"])["items"] if row["coingecko_id"] == coin_id), None)
+        if not selected:
+            raise HTTPException(404, "币种不在当前有效筛选结果内，请等待扫描或调整条件")
+        if service.collector is None:
+            raise HTTPException(503, "后台采集服务未运行")
+        try:
+            raw = await service.collector.fetch("https://api.coingecko.com/api/v3/coins/" + coin_id,
+                {"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"}, ttl=300)
+            if not isinstance(raw, dict) or raw.get("id") != coin_id or str(raw.get("symbol", "")).upper() != selected["symbol"]:
+                raise ValueError("币种身份未核验")
+            platforms = raw.get("platforms", {})
+            if not isinstance(platforms, dict):
+                raise ValueError("币种合约信息无效")
+            chain = next((key for key in ("ethereum", "base") if platforms.get(key)), None)
+            if not chain:
+                raise ValueError("此币种尚不支持链上深度观察；当前仅支持 Ethereum / Base 代币")
+            pair = selected["symbol"] + "USDT"
+            listing = await service.collector.fetch("https://api.binance.com/api/v3/exchangeInfo", {"symbol": pair}, ttl=900)
+            pairs = listing.get("symbols") if isinstance(listing, dict) else None
+            if not isinstance(pairs, list) or not any(isinstance(s, dict) and s.get("symbol") == pair and s.get("status") == "TRADING" and s.get("isSpotTradingAllowed") is True for s in pairs):
+                raise ValueError("此币种没有可用的 Binance USDT 现货，暂不能加入深度观察")
+            asset = RadarAsset(symbol=selected["symbol"], name=raw["name"], coingecko_id=coin_id,
+                               chain=chain, contract=platforms[chain], exchange_symbol=pair).model_dump()
+        except DataUnavailable:
+            raise HTTPException(422, "数据源暂不可用或该币种不支持深度观察，请稍后重试") from None
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"asset": asset}
 
     @app.put("/api/radar/settings")
     def save_settings(payload: RadarSettings, user=Depends(write), reader=Depends(read)):

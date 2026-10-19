@@ -53,6 +53,7 @@ async function radarRead(path) {
   finally { clearTimeout(timeout); radarRequests.delete(controller); }
 }
 function resetRadar() {
+  resetDiscovery();
   radarState.generation += 1;
   radarRequests.forEach(controller => controller.abort());
   radarRequests.clear();
@@ -67,6 +68,9 @@ function radarSession() {
   if (radarState.userId !== state.user?.id) resetRadar();
   radarState.userId = state.user?.id;
   const read = hasPermission("radar:view"), write = read && hasPermission("radar:manage_self");
+  radarEl("discovery-section").hidden = !read;
+  radarEl("discovery-config-section").hidden = !write;
+  radarEl("discovery-refresh").disabled = !write;
   radarEl("radar-section").hidden = !read;
   radarEl("radar-journal-section").hidden = !read;
   radarEl("radar-config-section").hidden = !write;
@@ -74,7 +78,7 @@ function radarSession() {
   if (!read) { resetRadar(); return; }
   if (!radarState.timer) radarState.timer = setInterval(() => {
     if (document.hidden || !state.user || radarEl("app-view").hidden) return;
-    if (state.activePage === "status") loadRadar();
+    if (state.activePage === "status") { loadRadar(); loadDiscovery(); }
     if (state.activePage === "trades") loadRadarSignals();
   }, 15000);
 }

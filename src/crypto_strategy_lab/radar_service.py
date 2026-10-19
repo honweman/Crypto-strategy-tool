@@ -8,6 +8,7 @@ from contextlib import suppress
 
 from .permissions import MANAGE_RADAR, VIEW_RADAR, has_user_permission
 from .radar import evaluate
+from .radar_discovery import DiscoveryStore
 from .radar_sources import PublicData
 from .radar_store import RadarStore
 
@@ -18,6 +19,8 @@ class RadarService:
     def __init__(self, db, notify=None, collector=None):
         self.db = db
         self.store = RadarStore(db)
+        self.discovery = DiscoveryStore(db)
+        self.discovery_task = None
         self.collector = collector
         self.notify = notify
         self.task = None
@@ -43,14 +46,42 @@ class RadarService:
         if self.collector is None:
             self.collector = PublicData()
         self.task = asyncio.create_task(self.run(), name="altcoin-observer")
+        self.discovery_task = asyncio.create_task(self.run_discovery(), name="altcoin-discovery")
 
     async def close(self):
+        if self.discovery_task:
+            self.discovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.discovery_task
         if self.task:
             self.task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.task
         if self.collector:
             await self.collector.close()
+
+    async def run_discovery(self):
+        while True:
+            job = None
+            try:
+                ids = [u["id"] for u in self.db.list_users() if self.permitted(u)]
+                job = self.discovery.claim(ids)
+                if job:
+                    payload = await asyncio.wait_for(self.collector.discover(), timeout=240)
+                    if any(self.permitted(u) and self.discovery.settings(u["id"])["enabled"] for u in self.db.list_users()):
+                        self.discovery.finish(job, payload)
+                    else:
+                        self.discovery.finish(job, error="discovery_paused")
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                if job:
+                    self.discovery.finish(job, error="worker_shutdown")
+                raise
+            except Exception:
+                logger.exception("Universe discovery failed")
+                if job:
+                    self.discovery.finish(job, error="discovery_failed")
+                await asyncio.sleep(15)
 
     async def run(self):
         while True:

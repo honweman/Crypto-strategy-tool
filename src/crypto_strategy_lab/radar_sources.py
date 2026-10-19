@@ -75,6 +75,10 @@ class PublicData:
         if self.owned_client:
             await self.client.aclose()
 
+    async def discover(self):
+        from .radar_discovery import DiscoveryCollector
+        return await DiscoveryCollector(self).collect()
+
     def fetched_at(self, url, params=None, body=None, raw=False):
         cached = self.cache.get(json.dumps([url, params, body, raw], sort_keys=True))
         if not cached:
@@ -104,7 +108,10 @@ class PublicData:
                     self.blocked_host[host] = time.time() + 30
                     raise DataUnavailable("network_error") from None
                 finally:
-                    spacing = 2.1 if "coingecko" in host else (1.2 if "blockscout" in host else 0.4)
+                    if host == "api.coingecko.com":
+                        spacing = 2.1 if os.getenv("CRYPTO_LAB_COINGECKO_DEMO_KEY") else 12.1
+                    else:
+                        spacing = 1.2 if "blockscout" in host else 0.4
                     self.next_host[host] = time.time() + spacing
                 if response.status_code == 429:
                     retry = number(response.headers.get("Retry-After"))

@@ -346,7 +346,8 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.service=self.app.state.radar
         self.admin=self.app.state.db.list_users()[0]
         self.service.store.ensure_user(self.admin["id"])
-        self.service.collector=Mock(collect=AsyncMock(return_value=evidence()[0]),close=AsyncMock())
+        self.service.collector=Mock(collect=AsyncMock(return_value=evidence()[0]),close=AsyncMock(),
+                                    discover=AsyncMock(return_value={"sources":{}, "rows":[], "unresolved":[]}))
 
     async def asyncTearDown(self):
         await self.service.close()

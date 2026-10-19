@@ -12,6 +12,35 @@
 
 管理员也不能通过观察接口读取其他用户的配置、地址标签和信号。权限撤销、用户停用或观察项更新后，正在执行的旧采集结果不会落库。Viewer 只有只读权限，不会自动启动付费或高频采集。
 
+## 自动发现低市值币种
+
+状态页新增独立扫描池，不再只扫描手工填写的四个项目，也不受深度观察的 20 项上限限制。默认筛选条件为：
+
+- Binance USDT 永续与 Upbit 韩国现货的代码交集。
+- 流通市值 100 万至 3 亿美元，包含边界；不是 FDV，也不是单枚币价。
+- Upbit KRW / BTC / USDT 全部报价市场。用户可只选 KRW、BTC 或 USDT。
+- 默认排除 Upbit `warning=true` 和警告状态未知的项目；普通 caution 标记单独显示，不自动解释为操纵。
+- 最低报告成交额默认为 0，即没有成交额过滤，可由用户提高。筛选命中本身没有通过盘口流动性检查。
+- 每 15 分钟自动扫描，可调整至 24 小时；并支持单独 Binance、单独 Upbit、两边并集。每位用户的筛选条件独立。
+
+Binance 列表只取 `/fapi/v1/exchangeInfo` 中 `TRADING`、`PERPETUAL`、USDT 报价及保证金币种、`underlyingType=COIN` 的合约。不含交割合约、币本位、USDC 合约及非加密资产合约。Upbit 使用韩国站 `api.upbit.com/v1/market/all?is_details=true`，不与新加坡或其他地区的交易对混用。
+
+币种身份优先使用 CoinGecko 的 Upbit 实际交易对 `coin_id` 映射，其次使用代码加完整英文名称或目录内唯一代码。多个候选 ID 冲突时不猜测，不自动去掉 `1000` 等倍数合约前缀。结果分别标注映射方法；**跨平台代码相同不等于跨平台合约身份已核验**。唯一代码匹配只能作为筛选线索，不能授权交易。第三方目录及重命名可能滞后，未匹配币种和覆盖缺口均展示，不声称已覆盖全部上市资产。
+
+市值按明确的 CoinGecko ID 分批查询 `/coins/markets`，再校验返回代码与记录对应；单次最多 200 个 ID。正市值和有效供应商 `last_updated` 均必需，市值缺失、为零、负值、身份不符、过期或未来时间异常的记录不入选。FDV、报告 24h 成交额、24h 涨跌幅仅为背景数据；成交额不是 Upbit 或 Binance 的单平台成交额。排除已知稳定币名单，但不保证覆盖所有新稳定币。
+
+上市列表和市值超过一小时即不可用于筛选。目录缓存 24 小时、Upbit 交易对映射缓存 6 小时、上市列表和市值请求缓存 15 分钟，保留原始时间；每日上市名单变化或映射缓存更新可能有延迟。映射按稳定的 base/target 排序读取，最多十页，未到末页会标记部分覆盖。若将扫描周期设为一小时以上，结果会在下次采集前进入过期状态。手动刷新只加入队列，不绕过缓存、60 秒冷却或供应商限速。
+
+未设置 CoinGecko Demo Key 时，同一进程内该主机的请求至少间隔 12.1 秒；有 Key 时至少间隔 2.1 秒。后台深度观察与扫描共用限速和缓存。额度仍由供应商决定，HTTP 429 按 Retry-After 冷却；不轮换出口或规避限制。首次完整扫描可能需要数分钟，网页读取已保存结果，不等待远端全量扫描。
+
+公共上市及市值快照跨用户共享，后台按具备权限且开启扫描的用户中的最短周期运行；个人过滤、观察列表和信号不共享。个人暂停只停止其触发自动扫描，不禁止读取其他活跃用户触发的公共更新。没有任何有权用户启用时不采集。任务有 300 秒租约和 240 秒超时，结果持久化到 SQLite；当前只保留最新公共扫描快照，不把它当作历史成分股数据库。部分供应商失败时保留可核实部分并标注缺口；整轮超时后旧结果不能继续充当有效命中。
+
+“配置观察”会再次核对 CoinGecko 身份、Ethereum / Base 合约地址和 Binance USDT 现货上市状态，然后仅预填原来的观察表单，需用户保存。原生币、其他链和没有 Binance 现货的项目可以出现在扫描池，但目前不能直接进入链上深度观察。**扫描池不自动对全部币种运行 24 项深度因子，不自动下单，也不把市值筛选命中叫作建仓信号。**
+
+接口沿用 `radar:view` / `radar:manage_self`：`GET /api/radar/discovery`、`PUT /api/radar/discovery/settings`、`POST /api/radar/discovery/refresh`、`POST /api/radar/discovery/prepare/{coin_id}`。Viewer 不可修改条件或触发采集。
+
+来源：[Binance Exchange Information](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information)、[Upbit 交易对列表](https://docs.upbit.com/kr/reference/list-trading-pairs)、[CoinGecko Exchange Tickers](https://docs.coingecko.com/reference/exchanges-id-tickers)、[CoinGecko 市值接口](https://docs.coingecko.com/reference/coins-markets)。
+
 ## 自动更新
 
 启动正常的 Web 服务即可，无需让浏览器保持打开：
