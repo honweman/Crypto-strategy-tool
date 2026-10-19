@@ -75,9 +75,9 @@ class PublicData:
         if self.owned_client:
             await self.client.aclose()
 
-    async def discover(self):
+    async def discover(self, profiles=None, previous=None):
         from .radar_discovery import DiscoveryCollector
-        return await DiscoveryCollector(self).collect()
+        return await DiscoveryCollector(self).collect(profiles, previous)
 
     def fetched_at(self, url, params=None, body=None, raw=False):
         cached = self.cache.get(json.dumps([url, params, body, raw], sort_keys=True))

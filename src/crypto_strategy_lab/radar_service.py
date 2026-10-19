@@ -67,8 +67,12 @@ class RadarService:
                 ids = [u["id"] for u in self.db.list_users() if self.permitted(u)]
                 job = self.discovery.claim(ids)
                 if job:
-                    payload = await asyncio.wait_for(self.collector.discover(), timeout=240)
-                    if any(self.permitted(u) and self.discovery.settings(u["id"])["enabled"] for u in self.db.list_users()):
+                    previous, _ = self.discovery.snapshot()
+                    payload = await asyncio.wait_for(self.collector.discover(profiles=job["profiles"], previous=previous), timeout=240)
+                    allowed = {u["id"] for u in self.db.list_users()
+                               if self.permitted(u) and self.discovery.settings(u["id"])["enabled"]}
+                    job["profiles"] = [p for p in job["profiles"] if p["user_id"] in allowed]
+                    if job["profiles"]:
                         self.discovery.finish(job, payload)
                     else:
                         self.discovery.finish(job, error="discovery_paused")

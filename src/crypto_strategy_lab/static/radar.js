@@ -72,6 +72,7 @@ function radarSession() {
   radarState.userId = state.user?.id;
   const read = hasPermission("radar:view"), write = read && hasPermission("radar:manage_self");
   radarEl("discovery-section").hidden = !read;
+  radarEl("discovery-history-section").hidden = !read;
   radarEl("discovery-config-section").hidden = !write;
   radarEl("discovery-refresh").disabled = !write;
   radarEl("radar-section").hidden = !read;

@@ -309,7 +309,7 @@ class DiscoveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             app=create_app(Path(directory)/"test.db","test-secret")
             service=app.state.radar
             admin=app.state.db.list_users()[0]
-            async def revoke():
+            async def revoke(**kwargs):
                 app.state.db.update_user(admin["id"],permission_revokes=["radar:manage_self"])
                 return sample()
             service.collector=Mock(discover=AsyncMock(side_effect=revoke),close=AsyncMock())

@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import time
+import zlib
 from collections import defaultdict
 from typing import Literal
 
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .radar import number
 from .radar_sources import DataUnavailable, timestamp
+from .radar_screening import SCREEN_VERSION, TARGETS, collect_books, collect_tickers, rank_items
 
 LIST_TTL = 3600
 CAP_TTL = 3600
@@ -32,6 +34,12 @@ class DiscoverySettings(BaseModel):
     min_volume: float = Field(default=0, ge=0, le=1e13, allow_inf_nan=False)
     exclude_upbit_warning: bool = True
     interval_seconds: int = Field(default=900, ge=900, le=86400)
+    target_market: Literal["binance_usdt", "upbit_krw", "upbit_btc", "upbit_usdt"] = "binance_usdt"
+    order_notional: float = Field(default=1000, gt=0, le=1e12, allow_inf_nan=False)
+    min_volume_multiple: float = Field(default=1000, ge=1, le=1e7, allow_inf_nan=False)
+    max_spread_bps: float = Field(default=25, gt=0, le=1000, allow_inf_nan=False)
+    max_slippage_bps: float = Field(default=50, gt=0, le=2000, allow_inf_nan=False)
+    min_depth_multiple: float = Field(default=3, ge=1, le=1000, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def valid_range(self):
@@ -110,7 +118,7 @@ class DiscoveryCollector:
     def __init__(self, public):
         self.public = public
 
-    async def collect(self):
+    async def collect(self, profiles=None, previous=None):
         sources = {}
 
         async def get(key, url, params=None, ttl=900, fallback=None):
@@ -174,7 +182,8 @@ class DiscoveryCollector:
         for offset in range(0, len(ids), 200):
             batch_ids = ids[offset:offset+200]
             raw = await get("caps", cap_url, {"vs_currency": "usd", "ids": ",".join(batch_ids),
-                                             "per_page": 250, "page": 1, "sparkline": "false"}, fallback=[])
+                                             "per_page": 250, "page": 1, "sparkline": "false",
+                                             "price_change_percentage": "7d"}, fallback=[])
             if sources["caps"]["status"] != "ok" or not isinstance(raw, list):
                 errors.append(sources["caps"].get("error", "invalid_market_data"))
                 continue
@@ -195,10 +204,21 @@ class DiscoveryCollector:
             except (ValueError, DataUnavailable, TypeError):
                 observed = None
             row.update(name=coin.get("name", row["name"]), market_cap=number(coin.get("market_cap")),
+                       price_usd=number(coin.get("current_price")),
                        fdv=number(coin.get("fully_diluted_valuation")), volume_24h=number(coin.get("total_volume")),
                        change_24h_pct=number(coin.get("price_change_percentage_24h")),
+                       change_7d_pct=number(coin.get("price_change_percentage_7d_in_currency")),
                        cap_observed_at=observed, url="https://www.coingecko.com/en/coins/" + row["coingecko_id"])
-        return {"schema_version": 1, "collected_at": time.time(), "sources": sources, "rows": rows, "unresolved": unresolved}
+        tickers, ticker_sources = await collect_tickers(self.public, rows)
+        sources.update(ticker_sources)
+        payload = {"schema_version": 2, "collected_at": time.time(), "sources": sources,
+                   "rows": rows, "unresolved": unresolved, "venue_tickers": tickers}
+        configs = {json.dumps(p["settings"], sort_keys=True): p["settings"]
+                   for p in (profiles or [{"settings": DiscoverySettings().model_dump()}])}
+        views = [discovery_view(payload, cfg, {}) for cfg in configs.values()]
+        payload.update(await collect_books(self.public, views, previous))
+        payload["collected_at"] = time.time()
+        return payload
 
 
 def discovery_view(payload, settings, state, now=None):
@@ -209,7 +229,7 @@ def discovery_view(payload, settings, state, now=None):
     fresh = {key: sources.get(key, {}).get("status") == "ok" and
              number(sources.get(key, {}).get("observed_at")) is not None and
              -60 <= now-sources[key]["observed_at"] <= LIST_TTL for key in ("binance", "upbit")}
-    matches, excluded = [], defaultdict(int)
+    matches, excluded, rejected = [], defaultdict(int), []
     scope_count = 0
     for original in payload["rows"]:
         row = dict(original)
@@ -217,6 +237,7 @@ def discovery_view(payload, settings, state, now=None):
         bn, ub = bool(row["binance_symbol"]), bool(markets)
         in_scope = {"intersection": bn and ub, "union": bn or ub, "binance": bn, "upbit": ub}[cfg.mode]
         if not in_scope:
+            rejected.append({**row, "exclusion_reasons": ["outside_listing_scope"]})
             continue
         scope_count += 1
         reasons = []
@@ -239,6 +260,7 @@ def discovery_view(payload, settings, state, now=None):
         if row["coingecko_id"] in STABLE_IDS:
             reasons.append("stablecoin")
         if reasons:
+            rejected.append({**row, "exclusion_reasons": reasons})
             for reason in set(reasons):
                 excluded[reason] += 1
             continue
@@ -250,8 +272,10 @@ def discovery_view(payload, settings, state, now=None):
         ub = any(cfg.upbit_quote == "all" or m["quote"] == cfg.upbit_quote for m in row["upbit_markets"])
         if {"intersection": bn and ub, "union": bn or ub, "binance": bn, "upbit": ub}[cfg.mode]:
             unresolved.append(row)
-    matches.sort(key=lambda x: (x["market_cap"], x["symbol"]))
+    screening = rank_items(matches, cfg, payload, now)
     return {"settings": cfg.model_dump(), "modes": MODES, "state": state, "sources": sources,
+            "targets": TARGETS, "screening": screening, "book_queue": payload.get("book_queue", {}),
+            "evaluated_at": now, "rejected": rejected,
             "listing_fresh": fresh, "collected_at": payload.get("collected_at"), "items": matches,
             "unresolved": unresolved, "excluded": dict(excluded), "mapped_in_scope": scope_count,
             "matched": len(matches), "mapping_complete": sources.get("mapping", {}).get("status") == "ok",
@@ -273,6 +297,17 @@ class DiscoveryStore:
                     lease_token TEXT, lease_until REAL NOT NULL DEFAULT 0
                 );
                 INSERT OR IGNORE INTO radar_discovery_state(id) VALUES (1);
+                CREATE TABLE IF NOT EXISTS radar_discovery_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
+                    version TEXT NOT NULL, universe BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS radar_discovery_results (
+                    run_id INTEGER NOT NULL REFERENCES radar_discovery_runs(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    summary TEXT NOT NULL, result BLOB NOT NULL, PRIMARY KEY(run_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS radar_discovery_results_user
+                    ON radar_discovery_results(user_id, run_id DESC);
             """)
 
     def settings(self, user_id):
@@ -302,10 +337,31 @@ class DiscoveryStore:
         payload, state = self.snapshot()
         return discovery_view(payload, self.settings(user_id), state)
 
+    def history(self, user_id, limit=20, before_id=None):
+        with self.db.connect() as conn:
+            rows = conn.execute("""SELECT r.id, r.created_at, r.version, v.summary
+                FROM radar_discovery_runs r JOIN radar_discovery_results v ON v.run_id=r.id
+                WHERE v.user_id=? AND (? IS NULL OR r.id<?) ORDER BY r.id DESC LIMIT ?""",
+                (user_id, before_id, before_id, limit)).fetchall()
+        return [{"id": r["id"], "created_at": r["created_at"], "version": r["version"],
+                 **json.loads(r["summary"])} for r in rows]
+
+    def historical(self, user_id, run_id):
+        with self.db.connect() as conn:
+            row = conn.execute("""SELECT r.id, r.created_at, r.version, r.universe, v.result
+                FROM radar_discovery_runs r JOIN radar_discovery_results v ON v.run_id=r.id
+                WHERE v.user_id=? AND r.id=?""", (user_id, run_id)).fetchone()
+        if not row:
+            return None
+        return {"id": row["id"], "created_at": row["created_at"], "version": row["version"], "frozen": True,
+                "result": json.loads(zlib.decompress(row["result"])),
+                "universe": json.loads(zlib.decompress(row["universe"]))}
+
     def claim(self, user_ids, now=None):
         now = time.time() if now is None else now
-        configs = [self.settings(uid) for uid in user_ids]
-        intervals = [c["interval_seconds"] for c in configs if c["enabled"]]
+        profiles = [{"user_id": uid, "settings": self.settings(uid)} for uid in user_ids]
+        profiles = [p for p in profiles if p["settings"]["enabled"]]
+        intervals = [p["settings"]["interval_seconds"] for p in profiles]
         if not intervals:
             return None
         token = secrets.token_hex(16)
@@ -314,16 +370,33 @@ class DiscoveryStore:
             cursor = conn.execute("""UPDATE radar_discovery_state SET lease_token=?, lease_until=?, last_started=?
                                   WHERE id=1 AND lease_until<=? AND next_due<=? AND last_started<=?""",
                                   (token, now+300, now, now, now, now-60))
-        return {"token": token, "interval": min(intervals)} if cursor.rowcount else None
+        return {"token": token, "interval": min(intervals), "profiles": profiles} if cursor.rowcount else None
 
     def finish(self, job, payload=None, error=None):
         now = time.time()
         serialized = json.dumps(payload, allow_nan=False) if payload is not None else None
         with self.db.connect() as conn:
-            return bool(conn.execute("""UPDATE radar_discovery_state SET payload=COALESCE(?,payload),
+            conn.execute("BEGIN IMMEDIATE")
+            saved = conn.execute("""UPDATE radar_discovery_state SET payload=COALESCE(?,payload),
                         last_finished=CASE WHEN ? IS NOT NULL THEN ? ELSE last_finished END,
                         last_error=?, next_due=?, lease_token=NULL, lease_until=0 WHERE id=1 AND lease_token=?""",
-                        (serialized, serialized, now, error, now+job["interval"], job["token"])).rowcount)
+                        (serialized, serialized, now, error, now+job["interval"], job["token"])).rowcount
+            if not saved:
+                return False
+            if payload is not None and error is None:
+                run_id = conn.execute("INSERT INTO radar_discovery_runs(created_at,version,universe) VALUES (?,?,?)",
+                    (now, SCREEN_VERSION, zlib.compress(serialized.encode()))).lastrowid
+                for profile in job.get("profiles", []):
+                    view = discovery_view(payload, profile["settings"], {}, now)
+                    summary = {"matched": view["matched"], "ranked": view["screening"]["ranked"],
+                               "liquidity_passed": view["screening"]["liquidity_passed"],
+                               "settings": view["settings"], "scope_complete": view["scope_complete"]}
+                    conn.execute("INSERT INTO radar_discovery_results(run_id,user_id,summary,result) VALUES (?,?,?,?)",
+                        (run_id, profile["user_id"], json.dumps(summary, allow_nan=False),
+                         zlib.compress(json.dumps(view, allow_nan=False).encode())))
+                conn.execute("DELETE FROM radar_discovery_runs WHERE created_at<? OR id NOT IN "
+                             "(SELECT id FROM radar_discovery_runs ORDER BY id DESC LIMIT 3000)", (now-30*86400,))
+            return True
 
     def refresh(self):
         now = time.time()

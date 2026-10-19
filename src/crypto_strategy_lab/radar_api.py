@@ -64,6 +64,19 @@ def register_radar_routes(app, service, require):
         audit(user, "discovery.settings")
         return value
 
+    @app.get("/api/radar/discovery/history")
+    def discovery_history(limit: int = Query(20, ge=1, le=100), before_id: int = Query(None, ge=1), user=Depends(read)):
+        rows = service.discovery.history(user["id"], limit, before_id)
+        return {"items": rows, "next_before_id": rows[-1]["id"] if len(rows) == limit else None,
+                "retention_days": 30, "max_runs": 3000}
+
+    @app.get("/api/radar/discovery/history/{run_id}")
+    def discovery_historical(run_id: int, user=Depends(read)):
+        result = service.discovery.historical(user["id"], run_id)
+        if result is None:
+            raise HTTPException(404, "discovery_history_not_found")
+        return result
+
     @app.post("/api/radar/discovery/refresh", status_code=202)
     def discovery_refresh(user=Depends(write), reader=Depends(read)):
         if not service.discovery.settings(user["id"])["enabled"]:
